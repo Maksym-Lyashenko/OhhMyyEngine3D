@@ -8,9 +8,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # GLFW (offline, from libs/)
 add_subdirectory(libs/glfw)
+add_subdirectory(libs/glm)
+
+# cgltf from libs header-only
+add_library(cgltf INTERFACE)
+target_include_directories(cgltf INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/libs/cgltf)
 
 # Sources
-file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS src/*.cpp libs/libs.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 
@@ -34,7 +39,7 @@ if (DEFINED ENV{VULKAN_SDK})
 endif()
 
 # Link GLFW last
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw glm cgltf)
 
 # --- Copy shaders to runtime dir (Debug/Release) ---
 add_custom_command(
@@ -42,6 +47,14 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/shaders
             $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
+)
+
+# --- Copy assets to runtime dir (Debug/Release) ---
+add_custom_command(
+    TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/assets
+            $<TARGET_FILE_DIR:${PROJECT_NAME}>/assets
 )
 
 # Warnings

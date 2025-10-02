@@ -1,12 +1,28 @@
 #version 450
 
-// A simple triangle with fixed positions (no vertex buffer)
-vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),
-    vec2(0.5, 0.5),
-    vec2(-0.5, 0.5)
-);
+layout(location = 0) in vec3 inPos;
+layout(location = 1) in vec3 inNormal;
+
+layout(location = 0) out vec3 vNormal; // world-space
+layout(location = 1) out vec3 vWorldPos;
+
+layout(push_constant) uniform Push {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+} u;
 
 void main() {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+    mat4 M = u.model;
+    mat4 V = u.view;
+    mat4 P = u.proj;
+
+    vec4 worldPos = M * vec4(inPos, 1.0);
+    vWorldPos = worldPos.xyz;
+
+    // normal в world space (без масштабов — через inverse-transpose)
+    mat3 N = mat3(transpose(inverse(M)));
+    vNormal = normalize(N * inNormal);
+
+    gl_Position = P * V * worldPos;
 }

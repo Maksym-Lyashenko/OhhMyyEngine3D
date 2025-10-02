@@ -1,14 +1,14 @@
-#include "core/VulkanRenderer.h"
+#include "rhi/vk/VulkanRenderer.h"
 
-#include "core/Logger.h"
+#include "platform/guards/LoggerGuard.h"
 
 int main()
 {
     try
     {
-        Core::Logger::init();
+        Platform::Guards::LoggerGuard logGuard;
 
-        Core::VulkanRenderer renderer;
+        Vk::VulkanRenderer renderer;
         renderer.run();
 
         return EXIT_SUCCESS;

@@ -5,6 +5,8 @@
             "includePath": [
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/libs/glfw/include",
+                "${workspaceFolder}/libs/glm",
+                "${workspaceFolder}/libs/cgltf",
                 "C:/VulkanSDK/1.4.321.1/Include"
             ],
             "defines": [
