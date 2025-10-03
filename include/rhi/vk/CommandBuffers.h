@@ -42,13 +42,17 @@ namespace Vk
         CommandBuffers &operator=(const CommandBuffers &) = delete;
 
         /// Record commands for a particular swapchain image index.
+        // Now binds *two* descriptor sets:
+        //   set=0 : view (UBO per image)
+        //   set=1 : material (albedo sampler) -- TEMPORARY single set reused for all draws
         void record(uint32_t imageIndex,
                     const RenderPass &renderPass,
                     const Framebuffers &framebuffers,
                     const GraphicsPipeline &pipeline,
                     const SwapChain &swapchain,
                     const std::vector<const Gfx::Mesh *> &meshes,
-                    VkDescriptorSet viewSet);
+                    VkDescriptorSet viewSet,      // set=0
+                    VkDescriptorSet materialSet); // set=1
 
         [[nodiscard]] VkCommandBuffer operator[](std::size_t i) const { return buffers_[i]; }
         [[nodiscard]] std::size_t size() const { return buffers_.size(); }

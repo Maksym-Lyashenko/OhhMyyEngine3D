@@ -4,8 +4,8 @@
 
 #include <array>
 #include <cstddef> // offsetof
-#include <cstdint>
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 namespace Vk::Gfx
@@ -28,6 +28,7 @@ namespace Vk::Gfx
     {
         glm::vec3 pos;    // location = 0
         glm::vec3 normal; // location = 1
+        glm::vec2 uv;     // location = 2
 
         /// Binding description for a single interleaved vertex buffer (binding = 0).
         [[nodiscard]] static VkVertexInputBindingDescription binding() noexcept
@@ -40,9 +41,9 @@ namespace Vk::Gfx
         }
 
         /// Attribute descriptions for pos/normal at locations 0/1.
-        [[nodiscard]] static std::array<VkVertexInputAttributeDescription, 2> attributes() noexcept
+        [[nodiscard]] static std::array<VkVertexInputAttributeDescription, 3> attributes() noexcept
         {
-            std::array<VkVertexInputAttributeDescription, 2> a{};
+            std::array<VkVertexInputAttributeDescription, 3> a{};
 
             // position (vec3)
             a[0].location = 0;
@@ -56,6 +57,12 @@ namespace Vk::Gfx
             a[1].format = VK_FORMAT_R32G32B32_SFLOAT;
             a[1].offset = static_cast<uint32_t>(offsetof(Vertex, normal));
 
+            // uv (vec2)
+            a[2].location = 2;
+            a[2].binding = 0;
+            a[2].format = VK_FORMAT_R32G32_SFLOAT;
+            a[2].offset = static_cast<uint32_t>(offsetof(Vertex, uv));
+
             return a;
         }
     };
@@ -63,6 +70,7 @@ namespace Vk::Gfx
     // Basic sanity checks to catch accidental padding/alignment changes.
     static_assert(offsetof(Vertex, pos) == 0, "pos must be at offset 0");
     static_assert(offsetof(Vertex, normal) == sizeof(glm::vec3), "normal must follow pos");
-    static_assert(sizeof(Vertex) == sizeof(glm::vec3) * 2, "Vertex size must be 24 bytes");
+    static_assert(offsetof(Vertex, uv) == sizeof(glm::vec3) * 2, "uv must follow normal");
+    static_assert(sizeof(Vertex) == sizeof(glm::vec3) * 2 + sizeof(glm::vec2), "Vertex size must be 32 bytes");
 
 } // namespace Vk::Gfx

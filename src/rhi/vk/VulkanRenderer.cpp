@@ -21,6 +21,7 @@
 
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/gfx/Vertex.h"
+#include "rhi/vk/gfx/Texture2D.h"
 
 #include "render/OrbitCamera.h"
 #include "render/ViewUniforms.h"
@@ -107,7 +108,7 @@ namespace Vk
         drawList.clear();
 
         // TODO: replace hardcoded path with asset manager/root config
-        auto meshDatas = Asset::GltfLoader::loadMeshes("assets/ford_mustang_1965/scene.gltf");
+        auto meshDatas = Asset::GltfLoader::loadMeshes("assets/makarov/scene.gltf");
 
         // ---- Optimize meshes (meshoptimizer) & collect stats ----
         struct MeshStats
@@ -172,6 +173,16 @@ namespace Vk
                     // Fallback if normals are missing
                     v.normal = {0.0f, 1.0f, 0.0f};
                 }
+                if (md.texcoords.size() / 2 == md.positions.size() / 3)
+                {
+                    v.uv = {md.texcoords[(i / 3) * 2 + 0],
+                            md.texcoords[(i / 3) * 2 + 1]};
+                }
+                else
+                {
+                    v.uv = {0.0f, 0.0f};
+                }
+
                 vertices.push_back(v);
             }
 
@@ -190,6 +201,21 @@ namespace Vk
 
         // Allocates UBO buffers and descriptor sets (set=0)
         ctx->createViewResources(physicalDevice->getDevice());
+
+        // --- Texture (TEMP) -----------------------------------------------------------
+        albedoTex = std::make_unique<Gfx::Texture2D>();
+        albedoTex->loadFromFile(
+            physicalDevice->getDevice(),
+            logicalDevice->getDevice(),
+            commandPool->get(),
+            logicalDevice->getGraphicsQueue(),
+            "assets/makarov/textures/makarov_baseColor.png", // TODO: взять из материала glTF
+            /*genMips*/ true,
+            /*fmt*/ VK_FORMAT_R8G8B8A8_SRGB);
+
+        // (TEMP) One material set for the whole scene
+        ctx->createMaterialSet(albedoTex->view(), albedoTex->sampler(),
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // --- Camera fitting --------------------------------------------------------
         const AABB box = computeWorldAABB(ctx->drawList);
@@ -220,7 +246,7 @@ namespace Vk
 
             // Record for image i: pass descriptor set (set=0)
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, ctx->drawList, ctx->viewSet(i));
+                                   *swapChain, ctx->drawList, ctx->viewSet(i), ctx->getMaterialSet());
         }
 
         // --- Frame loop driver -----------------------------------------------------
@@ -254,6 +280,8 @@ namespace Vk
             ctx->destroyViewResources();
             ctx.reset();
         }
+
+        albedoTex.reset();
 
         commandBuffers.reset();
         gpuMeshes.clear(); // destroy VBO/IBO via Mesh destructors
@@ -338,6 +366,9 @@ namespace Vk
         ctx->drawList = drawList;
         ctx->createViewResources(physicalDevice->getDevice());
 
+        ctx->createMaterialSet(albedoTex->view(), albedoTex->sampler(),
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
         // 6) Record new command buffers (and refresh UBOs)
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
@@ -350,7 +381,7 @@ namespace Vk
             ctx->updateViewUbo(i, u);
 
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, ctx->drawList, ctx->viewSet(i));
+                                   *swapChain, ctx->drawList, ctx->viewSet(i), ctx->getMaterialSet());
         }
 
         // 7) Recreate driver

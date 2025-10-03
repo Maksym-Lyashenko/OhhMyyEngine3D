@@ -44,11 +44,23 @@ namespace Vk
         // Draw list is just borrowed pointers (no ownership)
         std::vector<const Vk::Gfx::Mesh *> drawList;
 
-        // ---- View UBO/Descriptors (owned here) ----
-        VkDescriptorPool descPool = VK_NULL_HANDLE;
-        std::vector<VkBuffer> viewUbos;         // per-swapchain-image
-        std::vector<VkDeviceMemory> viewUboMem; // per-swapchain-image
-        std::vector<VkDescriptorSet> viewSets;  // per-swapchain-image
+        // ---- (TEMPORARY) View UBO/Descriptors (owned here) ----
+        // TODO: Move to a dedicated "ViewResources" or "FrameResources" module.
+        VkDescriptorPool descPool = VK_NULL_HANDLE; // TEMPORARY
+        std::vector<VkBuffer> viewUbos;             // TEMPORARY: per-swapchain-image UBO buffers
+        std::vector<VkDeviceMemory> viewUboMem;     // TEMPORARY: matching memory objects
+        std::vector<VkDescriptorSet> viewSets;      // TEMPORARY: set=0 per image
+
+        VkDescriptorPool materialPool = VK_NULL_HANDLE; // TEMPORARY
+        VkDescriptorSet materialSet = VK_NULL_HANDLE;   // TEMPORARY
+
+        // TEMPORARY : create a single material descriptor set(set = 1).
+        // Expects a valid sampled image: view + sampler + layout (typically SHADER_READ_ONLY_OPTIMAL).
+        void createMaterialSet(VkImageView imageView,
+                               VkSampler sampler,
+                               VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        VkDescriptorSet getMaterialSet() const noexcept { return materialSet; }
 
         RendererContext(VulkanLogicalDevice &d,
                         SwapChain &s,
@@ -59,14 +71,25 @@ namespace Vk
             : device(d), swapChain(s), commandBuffers(c),
               syncObjects(so), renderPass(rp), graphicsPipeline(gp) {}
 
-        // Allocate per-image UBOs, descriptor pool and descriptor sets.
-        // physDev is required to choose memory type for UBOs.
+        /**
+         * @brief (TEMPORARY) Allocate per-image UBOs, descriptor pool and descriptor sets.
+         * @param physDev Physical device (for memory type selection)
+         *
+         * Lifecycle: call after pipeline creation (we need its set layout) and after swapchain create.
+         * Destroy with destroyViewResources() before swapchain re-create or shutdown.
+         */
         void createViewResources(VkPhysicalDevice physDev);
 
-        // Update UBO contents for the given swapchain image (map/memcpy/unmap).
+        /**
+         * @brief (TEMPORARY) Update UBO contents for the given swapchain image.
+         *        Simple map/memcpy/unmap (HOST_VISIBLE | HOST_COHERENT).
+         */
         void updateViewUbo(uint32_t imageIndex, const Render::ViewUniforms &uboData) const;
 
-        // Destroy UBO buffers/memory and descriptor pool.
+        /**
+         * @brief (TEMPORARY) Destroy UBO buffers/memory and descriptor pool.
+         *        Safe to call multiple times.
+         */
         void destroyViewResources() noexcept;
 
         // Convenience accessor (valid after createViewResources).

@@ -14,6 +14,11 @@ namespace Render
 namespace Vk
 {
 
+    namespace Gfx
+    {
+        class Texture2D;
+    }
+
     class VulkanInstance;
     class Surface;
     class VulkanPhysicalDevice;
@@ -109,6 +114,8 @@ namespace Vk
 
         // ---- Camera ----
         std::unique_ptr<Render::OrbitCamera> orbitCamera; // Simple orbit camera for first view
+
+        std::unique_ptr<Gfx::Texture2D> albedoTex; // TODO:TEMPORARY
 
         // ---- State flags ----
         bool framebufferResized = false; // Legacy flag (can be driven by GLFW callback)

@@ -9,15 +9,21 @@ namespace Vk
 {
 
     class VulkanLogicalDevice;
-    class SwapChain;
     class RenderPass;
 
     /**
-     * @brief Basic graphics pipeline for the mesh pass.
+     * @brief Basic graphics pipeline for the mesh pass (with textures).
      *
-     * Layout:
-     *   set = 0, binding = 0 : UBO with Render::ViewUniforms (view / proj / viewProj / cameraPos)
-     *   push-constants (vertex stage) : mat4 model (64 bytes)
+     * Descriptor set layout:
+     *   set = 0, binding = 0 : UBO with Render::ViewUniforms (view / proj / viewProj / cameraPos) — VS
+     *   set = 1, binding = 0 : combined image sampler (albedo) — FS
+     *
+     * Push constants:
+     *   - vertex stage: mat4 model (64 bytes)
+     *
+     * NOTE (TEMPORARY):
+     *   Exposing descriptor set layouts here only to let RendererContext allocate sets.
+     *   We'll move this to a material/resource module later.
      */
     class GraphicsPipeline
     {
@@ -31,13 +37,19 @@ namespace Vk
 
         VkPipeline getPipeline() const { return pipeline; }
         VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
-        VkDescriptorSetLayout getViewSetLayout() const { return viewSetLayout; }
+
+        // TEMPORARY: external access for context to allocate sets
+        VkDescriptorSetLayout getViewSetLayout() const { return viewSetLayout; }         // set=0
+        VkDescriptorSetLayout getMaterialSetLayout() const { return materialSetLayout; } // set=1
 
     private:
         const VulkanLogicalDevice &device;
         VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
         VkPipeline pipeline{VK_NULL_HANDLE};
-        VkDescriptorSetLayout viewSetLayout{VK_NULL_HANDLE}; // set=0 layout for View UBO
+
+        // set layouts
+        VkDescriptorSetLayout viewSetLayout{VK_NULL_HANDLE};     // set=0 (VS UBO)
+        VkDescriptorSetLayout materialSetLayout{VK_NULL_HANDLE}; // set=1 (FS albedo sampler)
 
         VkShaderModule createShaderModule(const std::vector<char> &code) const;
         std::vector<char> readFile(const std::string &filename) const;

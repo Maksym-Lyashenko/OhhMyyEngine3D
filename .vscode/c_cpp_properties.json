@@ -8,12 +8,14 @@
                 "${workspaceFolder}/libs/glm",
                 "${workspaceFolder}/libs/meshoptimizer/src",
                 "${workspaceFolder}/libs/cgltf",
+                "${workspaceFolder}/libs/stb",
                 "C:/VulkanSDK/1.4.321.1/Include"
             ],
             "defines": [
                 "_DEBUG",
                 "UNICODE",
-                "_UNICODE"
+                "_UNICODE",
+                ["OME3D_USE_STB=1"]
             ],
             "windowsSdkVersion": "10.0.22621.0",
             "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.36.32532/bin/Hostx64/x64/cl.exe",

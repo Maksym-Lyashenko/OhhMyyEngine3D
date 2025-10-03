@@ -45,7 +45,8 @@ namespace Vk
                                 const GraphicsPipeline &pipeline,
                                 const SwapChain &swapchain,
                                 const std::vector<const Gfx::Mesh *> &meshes,
-                                VkDescriptorSet viewSet)
+                                VkDescriptorSet viewSet,
+                                VkDescriptorSet materialSet)
     {
         if (imageIndex >= buffers_.size())
         {
@@ -82,12 +83,13 @@ namespace Vk
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
         // 3.1) Bind per-view UBO descriptor set (set = 0)
+        const VkDescriptorSet sets[] = {viewSet, materialSet};
         vkCmdBindDescriptorSets(cmd,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline.getPipelineLayout(),
                                 /*firstSet*/ 0,
-                                /*setCount*/ 1,
-                                &viewSet,
+                                /*setCount*/ 2,
+                                sets,
                                 /*dynamicOffsetCount*/ 0,
                                 /*pDynamicOffsets*/ nullptr);
 

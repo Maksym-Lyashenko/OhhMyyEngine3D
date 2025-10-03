@@ -15,6 +15,11 @@ add_subdirectory(libs/meshoptimizer)
 add_library(cgltf INTERFACE)
 target_include_directories(cgltf INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/libs/cgltf)
 
+# stb_image from libs header-only
+add_library(stb_image INTERFACE)
+target_include_directories(stb_image INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/libs/stb)
+
+
 # Sources
 file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS src/*.cpp libs/libs.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
@@ -40,7 +45,8 @@ if (DEFINED ENV{VULKAN_SDK})
 endif()
 
 # Link GLFW last
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw glm cgltf meshoptimizer)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw glm cgltf stb_image meshoptimizer)
+target_compile_definitions(${PROJECT_NAME} PRIVATE OME3D_USE_STB=1)
 
 # --- Copy shaders to runtime dir (Debug/Release) ---
 add_custom_command(
