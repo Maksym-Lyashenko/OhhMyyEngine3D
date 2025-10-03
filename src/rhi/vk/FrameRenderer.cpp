@@ -3,110 +3,115 @@
 #include "rhi/vk/RendererContext.h"
 #include "rhi/vk/VulkanRenderer.h"
 
-#include <rhi/vk/Common.h>
+#include "rhi/vk/Common.h" // VK_CHECK, etc.
+
+#include <array>
 
 namespace Vk
 {
 
-    FrameRenderer::FrameRenderer(RendererContext &ctx,
-                                 VulkanRenderer &vulkanRenderer)
-        : ctx(ctx),
-          vulkanRenderer(vulkanRenderer)
+    FrameRenderer::FrameRenderer(RendererContext &ctx_, VulkanRenderer &vulkanRenderer_)
+        : ctx(ctx_), vulkanRenderer(vulkanRenderer_)
     {
-        // init tab “image -> fence”
+        // Map swapchain image -> fence that currently owns it (or VK_NULL_HANDLE if free).
         imagesInFlight.resize(ctx.swapChain.getImages().size(), VK_NULL_HANDLE);
     }
 
     void FrameRenderer::drawFrame()
     {
-
         auto &device = ctx.device;
         auto &swapChain = ctx.swapChain;
         auto &syncObjects = ctx.syncObjects;
         auto &commandBuffers = ctx.commandBuffers;
 
-        // 1) wait fence of current frame
+        // 1) Wait for the fence of the current frame (CPU/GPU sync for "frames in flight")
         VkFence &inFlightFence = syncObjects.getInFlightFence(currentFrame);
         VK_CHECK(vkWaitForFences(device.getDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX));
 
-        // 2) acquire image
+        // 2) Acquire next swapchain image
         uint32_t imageIndex = 0;
-        VkResult result = vkAcquireNextImageKHR(
+        VkResult acquireRes = vkAcquireNextImageKHR(
             device.getDevice(),
             swapChain.getSwapChain(),
             UINT64_MAX,
-            syncObjects.getImageAvailableSemaphore(currentFrame),
+            syncObjects.getImageAvailableSemaphore(currentFrame), // signaled when image is ready
             VK_NULL_HANDLE,
             &imageIndex);
 
-        if (result == VK_ERROR_OUT_OF_DATE_KHR)
+        if (acquireRes == VK_ERROR_OUT_OF_DATE_KHR)
         {
+            // Surface changed (resize, etc.) — trigger swapchain recreation.
             vulkanRenderer.markSwapchainDirty();
             return;
         }
-        if (result == VK_SUBOPTIMAL_KHR)
+        if (acquireRes == VK_SUBOPTIMAL_KHR)
         {
+            // Still usable, but should recreate soon.
             vulkanRenderer.markSwapchainDirty();
         }
-        else if (result != VK_SUCCESS)
+        else if (acquireRes != VK_SUCCESS)
         {
-            VK_CHECK(result);
+            // Any other error — escalate via VK_CHECK to keep diagnostics consistent.
+            VK_CHECK(acquireRes);
         }
 
-        // wait fence if this image still in flight
+        // If this image is already in use by an earlier frame, wait for that frame to finish.
         if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
         {
             VK_CHECK(vkWaitForFences(device.getDevice(), 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX));
         }
+        // From now on, this image will be guarded by the current frame's fence.
         imagesInFlight[imageIndex] = inFlightFence;
 
-        // reset fence
+        // Reset the fence for the current frame before submitting new work to the queue.
         VK_CHECK(vkResetFences(device.getDevice(), 1, &inFlightFence));
 
-        // 3) submit
-        VkSemaphore waitSemaphores[] = {syncObjects.getImageAvailableSemaphore(currentFrame)};
-        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkCommandBuffer cmd = commandBuffers[imageIndex];
-        VkSemaphore signalSemaphores[] = {syncObjects.getRenderFinishedSemaphoreForImage(imageIndex)};
+        // 3) Submit the recorded command buffer for this image
+        const VkCommandBuffer cmd = commandBuffers[imageIndex];
+
+        const std::array<VkSemaphore, 1> waitSemaphores{syncObjects.getImageAvailableSemaphore(currentFrame)};
+        const std::array<VkPipelineStageFlags, 1> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        const std::array<VkSemaphore, 1> signalSemaphores{syncObjects.getRenderFinishedSemaphoreForImage(imageIndex)};
 
         VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
+        submitInfo.pWaitSemaphores = waitSemaphores.data();
+        submitInfo.pWaitDstStageMask = waitStages.data();
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &cmd;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
+        submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
+        submitInfo.pSignalSemaphores = signalSemaphores.data();
 
         VK_CHECK(vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence));
 
-        // 4) present
-        VkSwapchainKHR swapChains[] = {swapChain.getSwapChain()};
+        // 4) Present
+        const std::array<VkSwapchainKHR, 1> swapChains{swapChain.getSwapChain()};
+
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = swapChains;
+        presentInfo.waitSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
+        presentInfo.pWaitSemaphores = signalSemaphores.data();
+        presentInfo.swapchainCount = static_cast<uint32_t>(swapChains.size());
+        presentInfo.pSwapchains = swapChains.data();
         presentInfo.pImageIndices = &imageIndex;
 
-        VkResult resultPresent = vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
-
-        if (resultPresent == VK_ERROR_OUT_OF_DATE_KHR)
+        VkResult presentRes = vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
+        if (presentRes == VK_ERROR_OUT_OF_DATE_KHR)
         {
+            // Presenting failed due to outdated swapchain — recreate.
             vulkanRenderer.markSwapchainDirty();
             return;
         }
-        if (resultPresent == VK_SUBOPTIMAL_KHR)
+        if (presentRes == VK_SUBOPTIMAL_KHR)
         {
+            // Usable but suboptimal — flag for recreation.
             vulkanRenderer.markSwapchainDirty();
-            // continue without throw
         }
-        else if (resultPresent != VK_SUCCESS)
+        else if (presentRes != VK_SUCCESS)
         {
-            VK_CHECK(resultPresent);
+            VK_CHECK(presentRes);
         }
 
-        // 5) next frame
+        // 5) Advance frame index (ring-buffer over max frames in flight)
         currentFrame = (currentFrame + 1) % syncObjects.getMaxFramesInFlight();
     }
 

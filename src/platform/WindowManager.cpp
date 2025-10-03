@@ -1,41 +1,49 @@
 #include "platform/WindowManager.h"
 
+#include <GLFW/glfw3.h>
 #include "core/Logger.h"
 
 namespace Platform
 {
-    WindowManager::WindowManager(uint32_t width, uint32_t height, const char *title)
-        : width(static_cast<int>(width)), height(static_cast<int>(height))
+
+    WindowManager::WindowManager(std::uint32_t w, std::uint32_t h, const char *title)
+        : width_(static_cast<int>(w)), height_(static_cast<int>(h))
     {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Vulkan only
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-        window = glfwCreateWindow(this->width, this->height, title, nullptr, nullptr);
-        if (!window)
+        window_ = glfwCreateWindow(width_, height_, title ? title : "Window", nullptr, nullptr);
+        if (!window_)
+        {
             throw std::runtime_error("Failed to create GLFW window");
+        }
 
-        glfwSetWindowUserPointer(window, this);
-        glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-        glfwSetKeyCallback(window, keyCallback);
+        glfwSetWindowUserPointer(window_, this);
+        glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
+        glfwSetKeyCallback(window_, keyCallback);
 
-        // Save windowed size for restoring after fullscreen
-        glfwGetWindowPos(window, &windowPosX, &windowPosY);
-        glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
+        // Save initial windowed geometry for later restore
+        glfwGetWindowPos(window_, &windowPosX_, &windowPosY_);
+        glfwGetWindowSize(window_, &windowedWidth_, &windowedHeight_);
 
         Core::Logger::log(Core::LogLevel::INFO, "Window created");
     }
 
-    WindowManager::~WindowManager()
+    WindowManager::~WindowManager() noexcept
     {
-        if (window)
-            glfwDestroyWindow(window);
+        if (window_)
+        {
+            glfwDestroyWindow(window_);
+            window_ = nullptr;
+        }
     }
 
-    bool WindowManager::shouldClose() const
+    bool WindowManager::shouldClose() const noexcept
     {
-        return glfwWindowShouldClose(window);
+        return glfwWindowShouldClose(window_) == GLFW_TRUE;
     }
 
-    void WindowManager::pollEvents() const
+    void WindowManager::pollEvents() const noexcept
     {
         glfwPollEvents();
     }
@@ -43,54 +51,80 @@ namespace Platform
     std::vector<const char *> WindowManager::getRequiredExtensions() const
     {
         uint32_t count = 0;
-        const char **extensions = glfwGetRequiredInstanceExtensions(&count);
-        return std::vector<const char *>(extensions, extensions + count);
+        const char **exts = glfwGetRequiredInstanceExtensions(&count);
+        if (!exts || count == 0)
+        {
+            // GLFW can return nullptr on platforms without Vulkan surface support yet
+            Core::Logger::log(Core::LogLevel::WARNING, "GLFW returned no required Vulkan extensions.");
+            return {};
+        }
+        return std::vector<const char *>{exts, exts + count};
     }
 
     void WindowManager::toggleFullscreen()
     {
-        fullscreen = !fullscreen;
+        fullscreen_ = !fullscreen_;
 
-        if (fullscreen)
+        if (fullscreen_)
         {
-            // Save windowed position and size
-            glfwGetWindowPos(window, &windowPosX, &windowPosY);
-            glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
+            // Save current windowed position & size
+            glfwGetWindowPos(window_, &windowPosX_, &windowPosY_);
+            glfwGetWindowSize(window_, &windowedWidth_, &windowedHeight_);
 
-            GLFWmonitor *monitor = glfwGetPrimaryMonitor();
+            // Prefer the monitor the window is currently on
+            GLFWmonitor *monitor = glfwGetWindowMonitor(window_);
+            if (!monitor)
+            {
+                // If not already fullscreen, pick primary or nearest
+                monitor = glfwGetPrimaryMonitor();
+            }
+
             const GLFWvidmode *mode = glfwGetVideoMode(monitor);
-            glfwSetWindowMonitor(window, monitor,
+            glfwSetWindowMonitor(window_,
+                                 monitor,
                                  0, 0,
                                  mode->width, mode->height,
                                  mode->refreshRate);
         }
         else
         {
-            // Restore windowed mode
-            glfwSetWindowMonitor(window, nullptr,
-                                 windowPosX, windowPosY,
-                                 windowedWidth, windowedHeight,
+            // Restore windowed geometry
+            glfwSetWindowMonitor(window_,
+                                 nullptr,
+                                 windowPosX_, windowPosY_,
+                                 windowedWidth_, windowedHeight_,
                                  0);
         }
     }
 
-    void WindowManager::framebufferResizeCallback(GLFWwindow *wnd, int width, int height)
+    void WindowManager::setTitle(const std::string &title) noexcept
     {
-        auto wm = reinterpret_cast<WindowManager *>(glfwGetWindowUserPointer(wnd));
-        wm->width = width;
-        wm->height = height;
+        glfwSetWindowTitle(window_, title.c_str());
+    }
+
+    void WindowManager::framebufferResizeCallback(GLFWwindow *wnd, int w, int h) noexcept
+    {
+        auto *wm = reinterpret_cast<WindowManager *>(glfwGetWindowUserPointer(wnd));
+        if (!wm)
+            return;
+
+        wm->width_ = w;
+        wm->height_ = h;
+
         if (wm->onFramebufferResize)
         {
-            wm->onFramebufferResize(width, height);
+            wm->onFramebufferResize(w, h);
         }
     }
 
-    void WindowManager::keyCallback(GLFWwindow *wnd, int key, int, int action, int mods)
+    void WindowManager::keyCallback(GLFWwindow *wnd, int key, int /*scancode*/, int action, int mods) noexcept
     {
         if (action == GLFW_PRESS && key == GLFW_KEY_ENTER && (mods & GLFW_MOD_ALT))
         {
-            auto wm = reinterpret_cast<WindowManager *>(glfwGetWindowUserPointer(wnd));
-            wm->toggleFullscreen();
+            auto *wm = reinterpret_cast<WindowManager *>(glfwGetWindowUserPointer(wnd));
+            if (wm)
+                wm->toggleFullscreen();
         }
     }
+
 } // namespace Platform

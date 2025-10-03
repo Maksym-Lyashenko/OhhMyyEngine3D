@@ -6,55 +6,56 @@
 #include "rhi/vk/ImageViews.h"
 
 #include "core/Logger.h"
-#include <rhi/vk/Common.h>
+#include "rhi/vk/Common.h"
 
-using namespace Core;
+#include <stdexcept>
 
 namespace Vk
 {
 
     Framebuffers::Framebuffers(const VulkanLogicalDevice &device,
-                               const RenderPass &renderPass,
-                               const SwapChain &swapChain,
-                               const ImageViews &imageViews,
+                               const RenderPass &rp,
+                               const SwapChain &sc,
+                               const ImageViews &iv,
                                VkImageView depthViewIn)
-        : logicalDevice(device),
-          renderPass(renderPass),
-          swapChain(swapChain),
-          imageViews(imageViews),
-          depthView(depthViewIn)
+        : logicalDevice(device), renderPass(rp), swapChain(sc), imageViews(iv), depthView(depthViewIn)
     {
     }
 
-    Framebuffers::~Framebuffers()
+    Framebuffers::~Framebuffers() noexcept
     {
         cleanup();
     }
 
     void Framebuffers::create()
     {
-        cleanup(); // safe-guard if called twice
-
-        // NOTE: We assume your helpers expose:
-        //   - RenderPass::getRenderPass() -> VkRenderPass
-        //   - SwapChain::getExtent()      -> VkExtent2D
-        //   - ImageViews::getViews()      -> const std::vector<VkImageView>&
-        //
-        // If your names differ (e.g. getImageViews()), just rename here accordingly.
+        cleanup(); // idempotent
 
         const auto &views = imageViews.getViews();
         const auto extent = swapChain.getExtent();
+
+        if (views.empty())
+        {
+            throw std::runtime_error("Framebuffers::create: no color image views provided");
+        }
+
         framebuffers.resize(views.size());
 
         for (size_t i = 0; i < views.size(); ++i)
         {
-            // We have a single color attachment per framebuffer.
-            VkImageView attachments[2] = {views[i], depthView};
+            // Build attachment list dynamically (color [+ depth])
+            VkImageView attachments[2];
+            uint32_t attachCount = 0;
 
-            VkFramebufferCreateInfo fbInfo{};
-            fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fbInfo.renderPass = renderPass.get(); // must match the attachment format/layout
-            fbInfo.attachmentCount = 2;
+            attachments[attachCount++] = views[i];
+            if (depthView != VK_NULL_HANDLE)
+            {
+                attachments[attachCount++] = depthView;
+            }
+
+            VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fbInfo.renderPass = renderPass.get(); // must match formats/layouts declared in RenderPass
+            fbInfo.attachmentCount = attachCount;
             fbInfo.pAttachments = attachments;
             fbInfo.width = extent.width;
             fbInfo.height = extent.height;
@@ -63,23 +64,24 @@ namespace Vk
             VK_CHECK(vkCreateFramebuffer(logicalDevice.getDevice(), &fbInfo, nullptr, &framebuffers[i]));
         }
 
-        Logger::log(LogLevel::INFO, "Created " + std::to_string(framebuffers.size()) + " framebuffers");
+        Core::Logger::log(Core::LogLevel::INFO,
+                          "Created " + std::to_string(framebuffers.size()) + " framebuffers");
     }
 
-    void Framebuffers::cleanup()
+    void Framebuffers::cleanup() noexcept
     {
-        if (!framebuffers.empty())
+        if (framebuffers.empty())
+            return;
+
+        for (auto fb : framebuffers)
         {
-            for (auto fb : framebuffers)
+            if (fb != VK_NULL_HANDLE)
             {
-                if (fb != VK_NULL_HANDLE)
-                {
-                    vkDestroyFramebuffer(logicalDevice.getDevice(), fb, nullptr);
-                }
+                vkDestroyFramebuffer(logicalDevice.getDevice(), fb, nullptr);
             }
-            framebuffers.clear();
-            Logger::log(LogLevel::INFO, "Framebuffers destroyed");
         }
+        framebuffers.clear();
+        Core::Logger::log(Core::LogLevel::INFO, "Framebuffers destroyed");
     }
 
 } // namespace Vk

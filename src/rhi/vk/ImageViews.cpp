@@ -1,38 +1,43 @@
 #include "rhi/vk/ImageViews.h"
 
 #include "core/Logger.h"
-#include <rhi/vk/Common.h>
-
-using namespace Core;
+#include "rhi/vk/Common.h"
 
 namespace Vk
 {
-    ImageViews::ImageViews(VkDevice device,
-                           const std::vector<VkImage> &swapChainImages,
-                           VkFormat swapChainImageFormat)
-        : device(device),
-          swapChainImages(swapChainImages),
-          swapChainImageFormat(swapChainImageFormat)
+
+    ImageViews::ImageViews(VkDevice device_,
+                           const std::vector<VkImage> &swapChainImages_,
+                           VkFormat swapChainImageFormat_)
+        : device(device_), swapChainImages(swapChainImages_), swapChainImageFormat(swapChainImageFormat_)
     {
     }
 
-    ImageViews::~ImageViews()
+    ImageViews::~ImageViews() noexcept
     {
         cleanup();
     }
 
     void ImageViews::create()
     {
-        cleanup(); // just in case re-create
+        // idempotent: start clean
+        cleanup();
 
         imageViews.resize(swapChainImages.size());
 
-        for (size_t i = 0; i < swapChainImages.size(); ++i)
+        for (std::size_t i = 0; i < swapChainImages.size(); ++i)
         {
             VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             viewInfo.image = swapChainImages[i];
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
             viewInfo.format = swapChainImageFormat;
+
+            // Explicit identity swizzle (good habit, some tools rely on this being sane)
+            viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
             viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             viewInfo.subresourceRange.baseMipLevel = 0;
             viewInfo.subresourceRange.levelCount = 1;
@@ -42,21 +47,25 @@ namespace Vk
             VK_CHECK(vkCreateImageView(device, &viewInfo, nullptr, &imageViews[i]));
         }
 
-        Logger::log(LogLevel::INFO,
-                    "Created " + std::to_string(imageViews.size()) + " swapchain image views");
+        Core::Logger::log(Core::LogLevel::INFO,
+                          "Created " + std::to_string(imageViews.size()) + " swapchain image views");
     }
 
-    void ImageViews::cleanup()
+    void ImageViews::cleanup() noexcept
     {
-        if (!imageViews.empty())
+        if (imageViews.empty())
+            return;
+
+        for (auto view : imageViews)
         {
-            for (auto view : imageViews)
+            if (view != VK_NULL_HANDLE)
             {
                 vkDestroyImageView(device, view, nullptr);
             }
-            Logger::log(LogLevel::INFO,
-                        "Destroyed " + std::to_string(imageViews.size()) + " image views");
-            imageViews.clear();
         }
+        Core::Logger::log(Core::LogLevel::INFO,
+                          "Destroyed " + std::to_string(imageViews.size()) + " image views");
+        imageViews.clear();
     }
+
 } // namespace Vk

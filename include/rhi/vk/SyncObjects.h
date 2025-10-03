@@ -1,46 +1,60 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <cstdint>
+#include <cstddef>
 
 namespace Vk
 {
 
+    /**
+     * @brief Synchronization bundle for rendering:
+     *  - Per-frame: imageAvailable semaphore + inFlight fence
+     *  - Per-image: renderFinished semaphore (one per swapchain image)
+     *
+     * Notes:
+     *  - Fences start in SIGNALED state to avoid stalling on the first frame.
+     *  - If swapchain image count changes, call reinit(newImageCount) or create a new SyncObjects.
+     */
     class SyncObjects
     {
     public:
-        static constexpr size_t MAX_FRAMES_IN_FLIGHT = 2;
+        static constexpr std::size_t MAX_FRAMES_IN_FLIGHT = 2;
 
-        // Create imageCount to allocate semaphores for every image
+        /// Create semaphores/fences for the given swapchain imageCount.
         SyncObjects(VkDevice device, uint32_t imageCount);
-        ~SyncObjects();
+        ~SyncObjects() noexcept;
 
         SyncObjects(const SyncObjects &) = delete;
         SyncObjects &operator=(const SyncObjects &) = delete;
 
-        // Per-frame
-        VkFence &getInFlightFence(size_t frame) { return inFlightFences[frame]; }
-        VkSemaphore getImageAvailableSemaphore(size_t frame) const { return imageAvailableSemaphores[frame]; }
+        /// Recreate internal semaphores/fences for a new image count.
+        void reinit(uint32_t newImageCount);
 
-        // Per-image
-        VkSemaphore getRenderFinishedSemaphoreForImage(uint32_t imageIndex) const { return renderFinishedPerImage[imageIndex]; }
+        // Per-frame accessors
+        VkFence &getInFlightFence(std::size_t frame) noexcept { return inFlightFences[frame]; }
+        VkSemaphore getImageAvailableSemaphore(std::size_t frame) const noexcept { return imageAvailableSemaphores[frame]; }
 
-        size_t getMaxFramesInFlight() const { return maxFramesInFlight; }
-        uint32_t getImageCount() const { return imageCount; }
+        // Per-image accessor
+        VkSemaphore getRenderFinishedSemaphoreForImage(uint32_t imageIndex) const noexcept { return renderFinishedPerImage[imageIndex]; }
+
+        std::size_t getMaxFramesInFlight() const noexcept { return maxFramesInFlight; }
+        uint32_t getImageCount() const noexcept { return imageCount; }
 
     private:
-        VkDevice device{};
-        size_t maxFramesInFlight{MAX_FRAMES_IN_FLIGHT};
+        VkDevice device{VK_NULL_HANDLE};
+        std::size_t maxFramesInFlight{MAX_FRAMES_IN_FLIGHT};
         uint32_t imageCount{0};
 
-        // per-frame
-        std::vector<VkSemaphore> imageAvailableSemaphores;
-        std::vector<VkFence> inFlightFences;
+        // Per-frame
+        std::vector<VkSemaphore> imageAvailableSemaphores; // signaled when image is acquired
+        std::vector<VkFence> inFlightFences;               // GPU work completion for each frame-in-flight
 
-        // per-image
-        std::vector<VkSemaphore> renderFinishedPerImage;
+        // Per-image
+        std::vector<VkSemaphore> renderFinishedPerImage; // signaled when rendering of a specific image is done
 
         void create();
-        void destroy();
+        void destroy() noexcept;
     };
 
 } // namespace Vk

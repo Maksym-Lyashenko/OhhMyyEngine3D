@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # GLFW (offline, from libs/)
 add_subdirectory(libs/glfw)
 add_subdirectory(libs/glm)
+add_subdirectory(libs/meshoptimizer)
 
 # cgltf from libs header-only
 add_library(cgltf INTERFACE)
@@ -39,7 +40,7 @@ if (DEFINED ENV{VULKAN_SDK})
 endif()
 
 # Link GLFW last
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw glm cgltf)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw glm cgltf meshoptimizer)
 
 # --- Copy shaders to runtime dir (Debug/Release) ---
 add_custom_command(

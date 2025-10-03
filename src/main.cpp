@@ -1,5 +1,6 @@
 #include "rhi/vk/VulkanRenderer.h"
 
+#include "core/Logger.h"
 #include "platform/guards/LoggerGuard.h"
 
 int main()

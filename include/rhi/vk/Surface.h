@@ -5,23 +5,47 @@
 
 namespace Vk
 {
-    class Surface
+
+    /**
+     * @brief RAII wrapper for VkSurfaceKHR created from a GLFW window.
+     *
+     * Notes:
+     *  - VkInstance and WindowManager must outlive this object.
+     *  - Resize of the window does NOT require recreating the surface;
+     *    recreate only if the underlying OS window is recreated.
+     */
+    class Surface final
     {
     public:
-        // Construct with VkInstance and a WindowManager reference
         Surface(VkInstance instance, const Platform::WindowManager &window);
-        ~Surface();
+        ~Surface() noexcept;
 
         Surface(const Surface &) = delete;
         Surface &operator=(const Surface &) = delete;
 
+        Surface(Surface &&other) noexcept;
+        Surface &operator=(Surface &&other) noexcept;
+
+        /// Create the surface if not created yet (idempotent).
         void create();
-        VkSurfaceKHR getSurface() const { return surface_; }
+
+        /// Destroy the surface if created (safe to call multiple times).
+        void cleanup() noexcept;
+
+        /// Recreate for a (potentially) new window handle.
+        void recreate(const Platform::WindowManager &newWindow)
+        {
+            window_ = &newWindow;
+            cleanup();
+            create();
+        }
+
+        VkSurfaceKHR get() const noexcept { return surface_; }
 
     private:
-        VkInstance instance_{VK_NULL_HANDLE};   // not owned
-        const Platform::WindowManager &window_; // not owned
-        VkSurfaceKHR surface_{VK_NULL_HANDLE};  // owned
-        bool created_ = false;
+        VkInstance instance_{VK_NULL_HANDLE};            // not owned
+        const Platform::WindowManager *window_{nullptr}; // not owned
+        VkSurfaceKHR surface_{VK_NULL_HANDLE};           // owned
     };
+
 } // namespace Vk

@@ -1,10 +1,13 @@
 #pragma once
+
 #include <vulkan/vulkan.h>
+
+#include <cstddef>
 #include <vector>
 
 namespace Render
 {
-    struct ViewUniforms;
+    struct ViewUniforms; // per-view UBO (view/proj/viewProj/etc.)
 }
 
 namespace Vk
@@ -15,39 +18,47 @@ namespace Vk
     class Framebuffers;
     class GraphicsPipeline;
     class SwapChain;
+
     namespace Gfx
     {
         class Mesh;
     }
 
-    // Allocates and records one primary command buffer per swapchain image.
+    /**
+     * @brief Owns one primary command buffer per swapchain image and records a simple draw list.
+     *
+     * Recording policy:
+     *   - per-frame UBO (Render::ViewUniforms) is expected to be already bound externally
+     *     via descriptor sets (set/binding defined in your pipeline layout);
+     *   - per-object data (model matrix) is pushed as push-constants (64 bytes).
+     */
     class CommandBuffers
     {
     public:
-        CommandBuffers(VkDevice device, const CommandPool &pool, size_t count);
+        CommandBuffers(VkDevice device, const CommandPool &pool, std::size_t count);
         ~CommandBuffers() = default;
 
         CommandBuffers(const CommandBuffers &) = delete;
         CommandBuffers &operator=(const CommandBuffers &) = delete;
 
-        // Re-record commands for a particular swapchain image index.
+        /// Record commands for a particular swapchain image index.
         void record(uint32_t imageIndex,
                     const RenderPass &renderPass,
                     const Framebuffers &framebuffers,
                     const GraphicsPipeline &pipeline,
                     const SwapChain &swapchain,
                     const std::vector<const Gfx::Mesh *> &meshes,
-                    Render::ViewUniforms &view);
+                    VkDescriptorSet viewSet);
 
-        VkCommandBuffer operator[](size_t i) const { return buffers[i]; }
-        size_t size() const { return buffers.size(); }
-        const std::vector<VkCommandBuffer> &getCommandBuffers() const { return buffers; }
+        [[nodiscard]] VkCommandBuffer operator[](std::size_t i) const { return buffers_[i]; }
+        [[nodiscard]] std::size_t size() const { return buffers_.size(); }
+        [[nodiscard]] const std::vector<VkCommandBuffer> &getCommandBuffers() const { return buffers_; }
 
     private:
-        VkDevice device{};
-        std::vector<VkCommandBuffer> buffers;
+        VkDevice device_{};
+        std::vector<VkCommandBuffer> buffers_;
 
-        void allocate(const CommandPool &pool, size_t count);
+        void allocate(const CommandPool &pool, std::size_t count);
     };
 
 } // namespace Vk

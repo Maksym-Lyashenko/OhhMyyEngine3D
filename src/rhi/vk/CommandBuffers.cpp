@@ -7,34 +7,25 @@
 #include "rhi/vk/SwapChain.h"
 
 #include "core/Logger.h"
-#include <rhi/vk/Common.h>
+#include "rhi/vk/Common.h"
 
 #include "rhi/vk/gfx/Mesh.h"
-#include "render/MVP.h"
-#include "render/ViewUniforms.h"
+#include "render/ViewUniforms.h" // per-view UBO layout (CPU side)
 
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/component_wise.hpp>
-#include <glm/ext/matrix_transform.hpp>
-#include <glm/ext/matrix_clip_space.hpp>
-#include <glm/gtx/euler_angles.hpp>
-
-#include "core/math/MathUtils.h"
-
-using namespace Core;
+// no <glm/gtx/*> needed here
 
 namespace Vk
 {
 
-    CommandBuffers::CommandBuffers(VkDevice device, const CommandPool &pool, size_t count)
-        : device(device)
+    CommandBuffers::CommandBuffers(VkDevice device, const CommandPool &pool, std::size_t count)
+        : device_(device)
     {
         allocate(pool, count);
     }
 
-    void CommandBuffers::allocate(const CommandPool &pool, size_t count)
+    void CommandBuffers::allocate(const CommandPool &pool, std::size_t count)
     {
-        buffers.resize(count);
+        buffers_.resize(count);
 
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -42,9 +33,10 @@ namespace Vk
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandBufferCount = static_cast<uint32_t>(count);
 
-        VK_CHECK(vkAllocateCommandBuffers(device, &allocInfo, buffers.data()));
+        VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, buffers_.data()));
 
-        Logger::log(LogLevel::INFO, "Allocated " + std::to_string(count) + " command buffers");
+        Core::Logger::log(Core::LogLevel::INFO,
+                          "Allocated " + std::to_string(count) + " command buffers");
     }
 
     void CommandBuffers::record(uint32_t imageIndex,
@@ -53,67 +45,91 @@ namespace Vk
                                 const GraphicsPipeline &pipeline,
                                 const SwapChain &swapchain,
                                 const std::vector<const Gfx::Mesh *> &meshes,
-                                Render::ViewUniforms &view)
+                                VkDescriptorSet viewSet)
     {
-        VkCommandBuffer cmd = buffers[imageIndex];
+        if (imageIndex >= buffers_.size())
+        {
+            Core::Logger::log(Core::LogLevel::ERROR, "record(): imageIndex out of range");
+            return;
+        }
+
+        VkCommandBuffer cmd = buffers_[imageIndex];
 
         // 1) Begin recording (SIMULTANEOUS_USE allows reuse without waiting)
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT; // ok for simple samples
 
         VK_CHECK(vkBeginCommandBuffer(cmd, &beginInfo));
 
-        // 2) Begin render pass with a clear color
+        // 2) Begin render pass with clear color/depth
         VkClearValue clears[2]{};
         clears[0].color = {{0.02f, 0.02f, 0.04f, 1.0f}};
-        clears[1].depthStencil = {1.0f, 0}; // clear depth
+        clears[1].depthStencil = {1.0f, 0};
 
-        VkRenderPassBeginInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpInfo.renderPass = renderPass.get();
-        rpInfo.framebuffer = framebuffers.getFramebuffers()[imageIndex];
-        rpInfo.renderArea.offset = {0, 0};
-        rpInfo.renderArea.extent = swapchain.getExtent();
-        rpInfo.clearValueCount = 2;
-        rpInfo.pClearValues = clears;
+        VkRenderPassBeginInfo rp{};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = renderPass.get();
+        rp.framebuffer = framebuffers.getFramebuffers()[imageIndex];
+        rp.renderArea.offset = {0, 0};
+        rp.renderArea.extent = swapchain.getExtent();
+        rp.clearValueCount = 2;
+        rp.pClearValues = clears;
 
-        vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
-        // 3) Bind graphics pipeline
+        // 3) Bind pipeline (descriptor set with ViewUniforms must be bound elsewhere)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
-        // 4) Dynamic viewport & scissor (pipeline declared them as dynamic)
+        // 3.1) Bind per-view UBO descriptor set (set = 0)
+        vkCmdBindDescriptorSets(cmd,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.getPipelineLayout(),
+                                /*firstSet*/ 0,
+                                /*setCount*/ 1,
+                                &viewSet,
+                                /*dynamicOffsetCount*/ 0,
+                                /*pDynamicOffsets*/ nullptr);
+
+        // 4) Dynamic viewport & scissor
+        const auto extent = swapchain.getExtent();
+
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = static_cast<float>(swapchain.getExtent().width);
-        viewport.height = static_cast<float>(swapchain.getExtent().height);
+        viewport.width = static_cast<float>(extent.width);
+        viewport.height = static_cast<float>(extent.height);
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(cmd, 0, 1, &viewport);
 
         VkRect2D scissor{};
         scissor.offset = {0, 0};
-        scissor.extent = swapchain.getExtent();
+        scissor.extent = extent;
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        // 5) Draw call
+        // 5) Draw meshes
+        //    We push only 'model' matrix as push-constants (64 bytes).
         if (!meshes.empty())
         {
-            Render::MVP base{};
-            base.view = view.view;
-            base.proj = view.proj;
-            base.viewProj = view.viewProj;
 
-            for (auto *mesh : meshes)
+            for (const auto *mesh : meshes)
             {
-                Render::MVP mvp = base;
-                mvp.model = mesh->getLocalTransform();
+                if (!mesh)
+                    continue;
+
+                glm::mat4 model = mesh->getLocalTransform();
 
                 mesh->bind(cmd);
-                vkCmdPushConstants(cmd, pipeline.getPipelineLayout(),
-                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Render::MVP), &mvp);
+
+                // Push constants: ONLY model matrix at offset 0.
+                vkCmdPushConstants(cmd,
+                                   pipeline.getPipelineLayout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT,
+                                   /*offset*/ 0,
+                                   /*size*/ static_cast<uint32_t>(sizeof(glm::mat4)),
+                                   &model);
+
                 mesh->draw(cmd);
             }
         }

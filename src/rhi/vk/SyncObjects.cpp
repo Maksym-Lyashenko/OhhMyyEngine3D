@@ -1,35 +1,45 @@
 #include "rhi/vk/SyncObjects.h"
 
 #include "core/Logger.h"
-#include <rhi/vk/Common.h>
-
-using namespace Core;
+#include "rhi/vk/Common.h"
 
 namespace Vk
 {
 
-    SyncObjects::SyncObjects(VkDevice device, uint32_t imageCount)
-        : device(device), imageCount(imageCount)
+    SyncObjects::SyncObjects(VkDevice device_, uint32_t imageCount_)
+        : device(device_), imageCount(imageCount_)
     {
         create();
     }
 
-    SyncObjects::~SyncObjects()
+    SyncObjects::~SyncObjects() noexcept
     {
         destroy();
     }
 
+    void SyncObjects::reinit(uint32_t newImageCount)
+    {
+        if (newImageCount == imageCount && !imageAvailableSemaphores.empty())
+            return; // nothing to do
+
+        destroy();
+        imageCount = newImageCount;
+        create();
+    }
+
     void SyncObjects::create()
     {
-        imageAvailableSemaphores.resize(maxFramesInFlight);
-        inFlightFences.resize(maxFramesInFlight);
-        renderFinishedPerImage.resize(imageCount); // per-image
+        imageAvailableSemaphores.resize(maxFramesInFlight, VK_NULL_HANDLE);
+        inFlightFences.resize(maxFramesInFlight, VK_NULL_HANDLE);
+        renderFinishedPerImage.resize(imageCount, VK_NULL_HANDLE);
 
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        fi.flags = VK_FENCE_CREATE_SIGNALED_BIT; // so that the first frame doesn't freeze
 
-        for (size_t i = 0; i < maxFramesInFlight; ++i)
+        // Start fences as signaled so the very first vkWaitForFences doesn't stall
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+        for (std::size_t i = 0; i < maxFramesInFlight; ++i)
         {
             VK_CHECK(vkCreateSemaphore(device, &si, nullptr, &imageAvailableSemaphores[i]));
             VK_CHECK(vkCreateFence(device, &fi, nullptr, &inFlightFences[i]));
@@ -39,27 +49,42 @@ namespace Vk
             VK_CHECK(vkCreateSemaphore(device, &si, nullptr, &renderFinishedPerImage[i]));
         }
 
-        Logger::log(LogLevel::INFO, "Sync objects created");
+        Core::Logger::log(Core::LogLevel::INFO, "Sync objects created");
     }
 
-    void SyncObjects::destroy()
+    void SyncObjects::destroy() noexcept
     {
-        // destroy in Renderer::cleanup() AFTER vkDeviceWaitIdle
-        for (auto s : imageAvailableSemaphores)
+        // Destroy per-frame
+        for (auto &s : imageAvailableSemaphores)
         {
-            if (s)
+            if (s != VK_NULL_HANDLE)
+            {
                 vkDestroySemaphore(device, s, nullptr);
+                s = VK_NULL_HANDLE;
+            }
         }
-        for (auto f : inFlightFences)
+        for (auto &f : inFlightFences)
         {
-            if (f)
+            if (f != VK_NULL_HANDLE)
+            {
                 vkDestroyFence(device, f, nullptr);
+                f = VK_NULL_HANDLE;
+            }
         }
-        for (auto s : renderFinishedPerImage)
+
+        // Destroy per-image
+        for (auto &s : renderFinishedPerImage)
         {
-            if (s)
+            if (s != VK_NULL_HANDLE)
+            {
                 vkDestroySemaphore(device, s, nullptr);
+                s = VK_NULL_HANDLE;
+            }
         }
+
+        imageAvailableSemaphores.clear();
+        inFlightFences.clear();
+        renderFinishedPerImage.clear();
     }
 
 } // namespace Vk

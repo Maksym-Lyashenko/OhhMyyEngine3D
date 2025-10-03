@@ -1,51 +1,62 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
-#include <stdexcept>
-#include <vector>
+#include <cstdint>
 #include <functional>
+#include <vector>
+#include <string>
+
+struct GLFWwindow; // forward-declare to avoid pulling GLFW in the header
 
 namespace Platform
 {
+
     class WindowManager
     {
     public:
-        WindowManager(uint32_t width, uint32_t height, const char *title);
+        explicit WindowManager(std::uint32_t width, std::uint32_t height, const char *title);
         ~WindowManager() noexcept;
 
-        // Non-copyable
         WindowManager(const WindowManager &) = delete;
         WindowManager &operator=(const WindowManager &) = delete;
+        WindowManager(WindowManager &&) = delete;
+        WindowManager &operator=(WindowManager &&) = delete;
 
-        GLFWwindow *getWindow() const { return window; }
-        int getWidth() const { return width; }
-        int getHeight() const { return height; }
+        [[nodiscard]] GLFWwindow *getWindow() const noexcept { return window_; }
+        [[nodiscard]] int width() const noexcept { return width_; }
+        [[nodiscard]] int height() const noexcept { return height_; }
+        [[nodiscard]] float aspect() const noexcept { return height_ > 0 ? float(width_) / float(height_) : 0.0f; }
 
-        // Callback that user can set to handle framebuffer resize
+        // User callback for framebuffer resize (width, height)
         std::function<void(int, int)> onFramebufferResize;
 
-        bool shouldClose() const;
-        void pollEvents() const;
+        [[nodiscard]] bool shouldClose() const noexcept;
+        void pollEvents() const noexcept;
 
-        // Get extensions required by GLFW for Vulkan instance
-        std::vector<const char *> getRequiredExtensions() const;
+        // Vulkan instance extensions required by GLFW
+        [[nodiscard]] std::vector<const char *> getRequiredExtensions() const;
 
-        // Toggle fullscreen on/off
+        // Toggle fullscreen on/off (Alt+Enter by default)
         void toggleFullscreen();
 
-        bool isFullscreen() const { return fullscreen; }
+        [[nodiscard]] bool isFullscreen() const noexcept { return fullscreen_; }
+
+        void setTitle(const std::string &title) noexcept;
 
     private:
-        GLFWwindow *window{nullptr};
-        int width{0}, height{0};
-        bool fullscreen{false};
+        GLFWwindow *window_{nullptr};
+        int width_{0}, height_{0};
+        bool fullscreen_{false};
 
-        // To restore windowed mode after fullscreen
-        int windowPosX{0}, windowPosY{0};
-        int windowedWidth{0}, windowedHeight{0};
+        // Saved windowed geometry to restore after fullscreen
+        int windowPosX_{0}, windowPosY_{0};
+        int windowedWidth_{0}, windowedHeight_{0};
 
-        // GLFW callbacks
-        static void framebufferResizeCallback(GLFWwindow *window, int width, int height);
-        static void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods);
+        // Callbacks
+        static void framebufferResizeCallback(GLFWwindow *window, int width, int height) noexcept;
+        static void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods) noexcept;
+
+        // Helper to pick monitor for fullscreen
+        static GLFWwindow *getWindowHandle(GLFWwindow *w) noexcept { return w; }
     };
+
 } // namespace Platform

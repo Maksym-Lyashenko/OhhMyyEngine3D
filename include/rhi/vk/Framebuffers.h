@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <cstddef>
 
 namespace Vk
 {
@@ -12,8 +13,11 @@ namespace Vk
     class VulkanLogicalDevice;
 
     /**
-     * Owns one VkFramebuffer per swapchain image view.
-     * Lifetime must be after: SwapChain, ImageViews, RenderPass, LogicalDevice.
+     * @brief Owns one VkFramebuffer per swapchain image.
+     *
+     * Requirements:
+     *  - SwapChain, ImageViews, RenderPass, and VulkanLogicalDevice must outlive this object.
+     *  - Depth view may be VK_NULL_HANDLE if depth is not used in the render pass.
      */
     class Framebuffers
     {
@@ -23,15 +27,18 @@ namespace Vk
                      const SwapChain &swapChain,
                      const ImageViews &imageViews,
                      VkImageView depthView);
-        ~Framebuffers();
+        ~Framebuffers() noexcept;
 
         Framebuffers(const Framebuffers &) = delete;
         Framebuffers &operator=(const Framebuffers &) = delete;
 
+        /// (Re)create all framebuffers. Safe to call multiple times.
         void create();
-        void cleanup();
+        /// Destroy all framebuffers. Safe to call multiple times.
+        void cleanup() noexcept;
 
-        const std::vector<VkFramebuffer> &getFramebuffers() const { return framebuffers; }
+        const std::vector<VkFramebuffer> &getFramebuffers() const noexcept { return framebuffers; }
+        VkFramebuffer get(size_t i) const noexcept { return framebuffers[i]; }
 
     private:
         const VulkanLogicalDevice &logicalDevice;

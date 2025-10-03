@@ -16,14 +16,17 @@
 #include "rhi/vk/SyncObjects.h"
 #include "rhi/vk/RendererContext.h"
 #include "rhi/vk/FrameRenderer.h"
-#include <rhi/vk/Common.h>
 #include "rhi/vk/DepthResources.h"
+#include "rhi/vk/Common.h"
 
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/gfx/Vertex.h"
+
 #include "render/OrbitCamera.h"
 #include "render/ViewUniforms.h"
+
 #include "asset/io/GltfLoader.h"
+#include "asset/processing/MeshOptimize.h"
 
 #include "core/math/MathUtils.h"
 #include "rhi/vk/gfx/utils/MeshUtils.h"
@@ -36,96 +39,119 @@ using Vk::Gfx::Utils::computeWorldAABB;
 
 namespace Vk
 {
+
     VulkanRenderer::VulkanRenderer()
         : glfwInitGuard(), window(800, 600, "OhhMyyEngine3D")
     {
         init();
     }
 
-    VulkanRenderer::~VulkanRenderer()
-    {
-        cleanup();
-    }
+    VulkanRenderer::~VulkanRenderer() { cleanup(); }
 
     void VulkanRenderer::init()
     {
         Logger::log(LogLevel::INFO, "VulkanRenderer initialized");
 
+        // Defer swapchain recreation to the beginning of a frame
         window.onFramebufferResize = [&](int /*w*/, int /*h*/)
-        {
-            markSwapchainDirty();
-        };
+        { markSwapchainDirty(); };
 
-        // 1. Vulkan instance
-        instance = std::make_unique<VulkanInstance>(window, true);
-
-        // 2. Surface (after instance is created)
+        // --- Device & surface chain ------------------------------------------------
+        instance = std::make_unique<VulkanInstance>(window, /*validation*/ true);
         surface = std::make_unique<Surface>(instance->getInstance(), window);
         surface->create();
-
-        // 3. Physical device (after surface exists)
         physicalDevice = std::make_unique<VulkanPhysicalDevice>(instance->getInstance(), *surface);
-
-        // 4. Logical device (after physical device exists)
         logicalDevice = std::make_unique<VulkanLogicalDevice>(*physicalDevice);
 
-        // 5. Swap Chain (after logical device exists)
+        // --- Swapchain & GPU-local targets ----------------------------------------
         swapChain = std::make_unique<SwapChain>(*physicalDevice, *logicalDevice, *surface, window);
         swapChain->create();
 
-        // 6. Command Pool
+        // Command pool tied to graphics queue family (primary CBs)
         commandPool = std::make_unique<CommandPool>(logicalDevice->getDevice(),
                                                     physicalDevice->getQueueFamilies().graphicsFamily.value());
 
-        // 7. Depth
+        // Depth buffer (image + memory + view) + layout transition
         depth = std::make_unique<DepthResources>();
-        depth->create(physicalDevice->getDevice(),
-                      logicalDevice->getDevice(),
-                      swapChain->getExtent(),
-                      commandPool->get(),
-                      logicalDevice->getGraphicsQueue());
+        depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
+                      swapChain->getExtent(), commandPool->get(), logicalDevice->getGraphicsQueue());
 
-        // 8. Render Pass
+        // Render pass that matches color+depth attachments
         renderPass = std::make_unique<RenderPass>(*logicalDevice, *swapChain, depth->getFormat());
 
-        // 9. Graphics papiline
-        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *swapChain, *renderPass);
+        // Graphics pipeline (no baked viewport/scissor — dynamic; layout has set=0 View UBO + PC for model)
+        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *renderPass);
 
-        // 10. Image Views
-        imageViews = std::make_unique<ImageViews>(
-            logicalDevice->getDevice(),
-            swapChain->getImages(),
-            swapChain->getImageFormat());
-
+        // Per-swapchain-image color views
+        imageViews = std::make_unique<ImageViews>(logicalDevice->getDevice(),
+                                                  swapChain->getImages(), swapChain->getImageFormat());
         imageViews->create();
 
-        // 11. Framebuffers (need: device, render pass, extent, image views)
-        framebuffers = std::make_unique<Framebuffers>(
-            *logicalDevice,
-            *renderPass,
-            *swapChain,
-            *imageViews,
-            depth->getView());
+        // One framebuffer per swapchain image + shared depth
+        framebuffers = std::make_unique<Framebuffers>(*logicalDevice, *renderPass,
+                                                      *swapChain, *imageViews, depth->getView());
         framebuffers->create();
 
-        // 12. Command Buffers
-
+        // One primary command buffer per swapchain image
         commandBuffers = std::make_unique<CommandBuffers>(logicalDevice->getDevice(),
-                                                          *commandPool,
-                                                          framebuffers->getFramebuffers().size());
+                                                          *commandPool, framebuffers->getFramebuffers().size());
 
-        // 13. Sync objects
+        // Sync: per-frame fences + per-image present semaphores
         syncObjects = std::make_unique<SyncObjects>(logicalDevice->getDevice(),
                                                     static_cast<uint32_t>(swapChain->getImages().size()));
 
-        // Load glTF and create Mesh
-
-        // --- Loading glTF and create Mesh ---
+        // --- Assets → GPU meshes ---------------------------------------------------
+        // Make sure nothing is executing while we (re)upload meshes
         VK_CHECK(vkDeviceWaitIdle(logicalDevice->getDevice()));
         gpuMeshes.clear();
         drawList.clear();
 
+        // TODO: replace hardcoded path with asset manager/root config
         auto meshDatas = Asset::GltfLoader::loadMeshes("assets/ford_mustang_1965/scene.gltf");
+
+        // ---- Optimize meshes (meshoptimizer) & collect stats ----
+        struct MeshStats
+        {
+            size_t vertices{};
+            size_t indices{};
+            size_t triangles() const { return indices / 3; }
+        };
+
+        auto collectStats = [](const std::vector<Asset::MeshData> &mds)
+        {
+            MeshStats s{};
+            for (auto &m : mds)
+            {
+                s.vertices += m.positions.size() / 3;
+                s.indices += m.indices.size();
+            }
+            return s;
+        };
+
+        MeshStats before = collectStats(meshDatas);
+
+        // Tune settings if needed
+        Asset::Processing::OptimizeSettings opt{};
+        opt.optimizeCache = true;
+        opt.optimizeOverdraw = true;
+        opt.overdrawThreshold = 1.05f;
+        opt.optimizeFetch = true;
+        opt.simplify = true;            // включить LOD-упрощение
+        opt.simplifyTargetRatio = 0.6f; // до 60% от исходных индексов
+        opt.simplifyError = 1e-2f;
+
+        for (auto &md : meshDatas)
+        {
+            Asset::Processing::OptimizeMeshInPlace(md, opt);
+        }
+
+        MeshStats after = collectStats(meshDatas);
+
+        CORE_LOG_INFO(
+            "Mesh optimize: vertices " + std::to_string(before.vertices) + " -> " + std::to_string(after.vertices) +
+            ", indices " + std::to_string(before.indices) + " -> " + std::to_string(after.indices) +
+            ", tris " + std::to_string(before.triangles()) + " -> " + std::to_string(after.triangles()));
+
         gpuMeshes.reserve(meshDatas.size());
         drawList.reserve(meshDatas.size());
 
@@ -143,7 +169,7 @@ namespace Vk
                 }
                 else
                 {
-                    // на всякий случай (если нормалей нет) — единичная вверх
+                    // Fallback if normals are missing
                     v.normal = {0.0f, 1.0f, 0.0f};
                 }
                 vertices.push_back(v);
@@ -157,37 +183,47 @@ namespace Vk
             gpuMeshes.push_back(std::move(m));
         }
 
-        // 13. Renderer Context
-        ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers, *syncObjects,
-                                                *renderPass, *graphicsPipeline);
+        // --- Renderer context + per-image View UBO/sets ---------------------------
+        ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
+                                                *syncObjects, *renderPass, *graphicsPipeline);
         ctx->drawList = drawList;
 
+        // Allocates UBO buffers and descriptor sets (set=0)
+        ctx->createViewResources(physicalDevice->getDevice());
+
+        // --- Camera fitting --------------------------------------------------------
         const AABB box = computeWorldAABB(ctx->drawList);
 
         if (!orbitCamera)
         {
             orbitCamera = std::make_unique<Render::OrbitCamera>();
         }
-
         orbitCamera->setAzimuth(225.0f);
         orbitCamera->setElevation(-20.0f);
         orbitCamera->setRoll(-2.5f);
 
-        float aspect = swapChain->getExtent().width / (float)swapChain->getExtent().height;
-        orbitCamera->frameToBox(box.min, box.max, /*fovY_deg=*/32.0f, aspect, /*pad=*/1.05f, /*lift=*/0.06f);
+        const float aspect = swapChain->getExtent().width / float(swapChain->getExtent().height);
+        orbitCamera->frameToBox(box.min, box.max, /*fovY_deg=*/32.0f, aspect,
+                                /*pad=*/1.05f, /*lift=*/0.06f);
 
-        // Record Command Buffers
+        // --- Record command buffers ----------------------------------------------
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
+            // Update per-image View UBO
             Render::ViewUniforms u{};
             u.view = orbitCamera->view();
             u.proj = orbitCamera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = orbitCamera->position();
-            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline, *swapChain, ctx->drawList, u);
+            u.cameraPos = glm::vec4(orbitCamera->position(), 1.0f); // std140-friendly
+
+            ctx->updateViewUbo(i, u);
+
+            // Record for image i: pass descriptor set (set=0)
+            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
+                                   *swapChain, ctx->drawList, ctx->viewSet(i));
         }
 
-        // 14. Render
+        // --- Frame loop driver -----------------------------------------------------
         frameRenderer = std::make_unique<FrameRenderer>(*ctx, *this);
     }
 
@@ -197,7 +233,7 @@ namespace Vk
         {
             window.pollEvents();
             maybeRecreateSwapchain();
-            if (window.getWidth() == 0 || window.getHeight() == 0)
+            if (window.width() == 0 || window.height() == 0) // minimized
                 continue;
             frameRenderer->drawFrame();
         }
@@ -211,9 +247,16 @@ namespace Vk
         }
 
         frameRenderer.reset();
-        ctx.reset();
+
+        if (ctx)
+        {
+            // owns per-image UBOs/descriptor sets
+            ctx->destroyViewResources();
+            ctx.reset();
+        }
+
         commandBuffers.reset();
-        gpuMeshes.clear();
+        gpuMeshes.clear(); // destroy VBO/IBO via Mesh destructors
         framebuffers.reset();
         imageViews.reset();
         graphicsPipeline.reset();
@@ -230,38 +273,39 @@ namespace Vk
         Logger::log(LogLevel::INFO, "VulkanRenderer shutting down");
     }
 
-    void VulkanRenderer::run()
-    {
-        mainLoop();
-    }
+    void VulkanRenderer::run() { mainLoop(); }
 
     void VulkanRenderer::recreateSwapChain()
     {
-        // 0) Ignore resize while minimized (width/height == 0)
-        int w = window.getWidth();
-        int h = window.getHeight();
-        if (w == 0 || h == 0)
+        // 0) Skip while minimized
+        if (window.width() == 0 || window.height() == 0)
             return;
 
-        // 1) Wait for GPU idle before touching resources
+        // 1) Be safe
         VK_CHECK(vkDeviceWaitIdle(logicalDevice->getDevice()));
 
-        // 2) Drop objects that depend on swapchain (order matters!)
-        frameRenderer.reset(); // first, release anything referencing old objects
+        // 2) Destroy/Reset everything that depends on the swapchain (order matters)
+        frameRenderer.reset();
         commandBuffers.reset();
+
+        if (ctx)
+        {
+            // Drop UBOs/sets that referenced old swapchain images/layouts
+            ctx->destroyViewResources();
+        }
+
         framebuffers.reset();
         imageViews.reset();
         graphicsPipeline.reset();
         renderPass.reset();
         depth.reset();
 
-        // 3) Recreate swapchain internals
+        // 3) Recreate swapchain and depth
         swapChain->cleanup();
         swapChain->create();
 
         orbitCamera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
 
-        // recreate depth
         depth = std::make_unique<DepthResources>();
         depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
                       swapChain->getExtent(), commandPool->get(), logicalDevice->getGraphicsQueue());
@@ -269,67 +313,62 @@ namespace Vk
         const uint32_t newImageCount = static_cast<uint32_t>(swapChain->getImages().size());
         if (newImageCount != syncObjects->getImageCount())
         {
-            // Recreate per-image semaphores/fences if count changed
+            // Recreate per-image semaphores/fences only if the count changed
             syncObjects = std::make_unique<SyncObjects>(logicalDevice->getDevice(), newImageCount);
         }
 
         // 4) Recreate dependent objects
         renderPass = std::make_unique<RenderPass>(*logicalDevice, *swapChain, depth->getFormat());
-        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *swapChain, *renderPass);
+        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *renderPass);
 
-        imageViews = std::make_unique<ImageViews>(
-            logicalDevice->getDevice(),
-            swapChain->getImages(),
-            swapChain->getImageFormat());
+        imageViews = std::make_unique<ImageViews>(logicalDevice->getDevice(),
+                                                  swapChain->getImages(), swapChain->getImageFormat());
         imageViews->create();
 
-        framebuffers = std::make_unique<Framebuffers>(
-            *logicalDevice, *renderPass, *swapChain, *imageViews, depth->getView());
+        framebuffers = std::make_unique<Framebuffers>(*logicalDevice, *renderPass,
+                                                      *swapChain, *imageViews, depth->getView());
         framebuffers->create();
 
-        commandBuffers = std::make_unique<CommandBuffers>(
-            logicalDevice->getDevice(), *commandPool,
-            framebuffers->getFramebuffers().size());
+        commandBuffers = std::make_unique<CommandBuffers>(logicalDevice->getDevice(),
+                                                          *commandPool, framebuffers->getFramebuffers().size());
 
-        // 5) Recreate renderer context (it holds references to recreated objects)
-        ctx = std::make_unique<RendererContext>(
-            *logicalDevice,
-            *swapChain,
-            *commandBuffers,
-            *syncObjects, // important: if syncObjects was recreated above, here comes new one
-            *renderPass,
-            *graphicsPipeline);
-
+        // 5) Recreate renderer context (pipeline/layout might have changed)
+        ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
+                                                *syncObjects, *renderPass, *graphicsPipeline);
         ctx->drawList = drawList;
+        ctx->createViewResources(physicalDevice->getDevice());
 
-        // 6) Record new command buffers
+        // 6) Record new command buffers (and refresh UBOs)
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
             Render::ViewUniforms u{};
             u.view = orbitCamera->view();
             u.proj = orbitCamera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = orbitCamera->position();
-            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline, *swapChain, ctx->drawList, u);
+            u.cameraPos = glm::vec4(orbitCamera->position(), 1.0f);
+
+            ctx->updateViewUbo(i, u);
+
+            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
+                                   *swapChain, ctx->drawList, ctx->viewSet(i));
         }
 
-        // 7) Recreate frame renderer using fresh context
+        // 7) Recreate driver
         frameRenderer = std::make_unique<FrameRenderer>(*ctx, *this);
 
         Logger::log(LogLevel::INFO, "SwapChain and dependent resources recreated");
     }
 
-    void Vk::VulkanRenderer::maybeRecreateSwapchain()
+    void VulkanRenderer::maybeRecreateSwapchain()
     {
         if (!swapchainDirty)
             return;
-
-        // Don't recreate while minimized — keep the dirty flag set
-        if (window.getWidth() == 0 || window.getHeight() == 0)
-            return;
+        if (window.width() == 0 || window.height() == 0)
+            return; // keep dirty flag set
 
         VK_CHECK(vkDeviceWaitIdle(logicalDevice->getDevice()));
         recreateSwapChain();
         swapchainDirty = false;
     }
+
 } // namespace Vk

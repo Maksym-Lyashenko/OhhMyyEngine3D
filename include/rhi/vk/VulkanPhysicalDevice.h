@@ -7,6 +7,7 @@
 
 namespace Vk
 {
+
     class Surface;
 
     struct QueueFamilyIndices
@@ -20,6 +21,17 @@ namespace Vk
         }
     };
 
+    /**
+     * @brief Picks a suitable VkPhysicalDevice for rendering to the given Surface.
+     *
+     * Guarantees:
+     *  - graphics + present queue families are available;
+     *  - VK_KHR_swapchain is supported by the device;
+     *  - the surface has at least one format and one present mode.
+     *
+     * Heuristic:
+     *  - prefer DISCRETE_GPU over others; ties broken by maxImageDimension2D.
+     */
     class VulkanPhysicalDevice
     {
     public:
@@ -35,12 +47,22 @@ namespace Vk
     private:
         VkInstance instance{VK_NULL_HANDLE};
         VkPhysicalDevice physicalDevice{VK_NULL_HANDLE};
-        QueueFamilyIndices queueFamilies;
+        QueueFamilyIndices queueFamilies{};
 
+        // Selection pipeline
         void pickPhysicalDevice(const Surface &surface);
         bool isDeviceSuitable(VkPhysicalDevice device, const Surface &surface);
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, const Surface &surface);
 
+        // Swapchain support checks
+        bool checkDeviceExtensions(VkPhysicalDevice device) const;
+        bool checkSurfaceSupport(VkPhysicalDevice device, const Surface &surface) const;
+
+        // Scoring heuristic
+        int deviceScore(VkPhysicalDevice device) const;
+
+        // Pretty-print
         std::string deviceTypeToString(VkPhysicalDeviceType type) const;
     };
+
 } // namespace Vk
