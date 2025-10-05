@@ -9,7 +9,8 @@
 #include "core/Logger.h"
 #include "rhi/vk/Common.h"
 
-#include "rhi/vk/gfx/Mesh.h"
+#include "rhi/vk/gfx/DrawItem.h"
+#include "render/materials/Material.h"
 #include "render/ViewUniforms.h" // per-view UBO layout (CPU side)
 
 // no <glm/gtx/*> needed here
@@ -44,9 +45,8 @@ namespace Vk
                                 const Framebuffers &framebuffers,
                                 const GraphicsPipeline &pipeline,
                                 const SwapChain &swapchain,
-                                const std::vector<const Gfx::Mesh *> &meshes,
-                                VkDescriptorSet viewSet,
-                                VkDescriptorSet materialSet)
+                                const std::vector<Gfx::DrawItem> &items,
+                                VkDescriptorSet viewSet)
     {
         if (imageIndex >= buffers_.size())
         {
@@ -82,17 +82,6 @@ namespace Vk
         // 3) Bind pipeline (descriptor set with ViewUniforms must be bound elsewhere)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
-        // 3.1) Bind per-view UBO descriptor set (set = 0)
-        const VkDescriptorSet sets[] = {viewSet, materialSet};
-        vkCmdBindDescriptorSets(cmd,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline.getPipelineLayout(),
-                                /*firstSet*/ 0,
-                                /*setCount*/ 2,
-                                sets,
-                                /*dynamicOffsetCount*/ 0,
-                                /*pDynamicOffsets*/ nullptr);
-
         // 4) Dynamic viewport & scissor
         const auto extent = swapchain.getExtent();
 
@@ -112,28 +101,30 @@ namespace Vk
 
         // 5) Draw meshes
         //    We push only 'model' matrix as push-constants (64 bytes).
-        if (!meshes.empty())
+
+        for (const Gfx::DrawItem &it : items)
         {
+            if (!it.mesh || !it.material)
+                continue;
 
-            for (const auto *mesh : meshes)
-            {
-                if (!mesh)
-                    continue;
+            // Bind descriptor sets: [0] view UBO, [1] material
+            VkDescriptorSet sets[2] = {viewSet, it.material->descriptorSet()};
+            vkCmdBindDescriptorSets(cmd,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline.getPipelineLayout(),
+                                    /*firstSet*/ 0, /*setCount*/ 2, sets,
+                                    /*dynamicOffsetCount*/ 0, /*pDynamicOffsets*/ nullptr);
 
-                glm::mat4 model = mesh->getLocalTransform();
+            // Bind geometry
+            it.mesh->bind(cmd);
 
-                mesh->bind(cmd);
+            // Push constants: model matrix only (64 bytes)
+            glm::mat4 model = it.mesh->getLocalTransform();
+            vkCmdPushConstants(cmd, pipeline.getPipelineLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               static_cast<uint32_t>(sizeof(glm::mat4)), &model);
 
-                // Push constants: ONLY model matrix at offset 0.
-                vkCmdPushConstants(cmd,
-                                   pipeline.getPipelineLayout(),
-                                   VK_SHADER_STAGE_VERTEX_BIT,
-                                   /*offset*/ 0,
-                                   /*size*/ static_cast<uint32_t>(sizeof(glm::mat4)),
-                                   &model);
-
-                mesh->draw(cmd);
-            }
+            it.mesh->draw(cmd);
         }
 
         // 6) End render pass

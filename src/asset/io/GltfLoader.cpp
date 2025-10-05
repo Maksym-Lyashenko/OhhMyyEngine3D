@@ -14,6 +14,92 @@
 using Core::Logger;
 using Core::LogLevel;
 
+namespace
+{
+
+    // Fill md.tangents (size = 4*V) either from geometry or leave empty if impossible.
+    static void GenerateTangents(Asset::MeshData &md)
+    {
+        const size_t vcount = md.positions.size() / 3;
+        if (vcount == 0 || md.indices.size() < 3)
+            return;
+        if (md.texcoords.size() != vcount * 2)
+            return; // need UVs
+        if (md.normals.size() != vcount * 3)
+            return; // need normals
+
+        std::vector<glm::vec3> T(vcount, glm::vec3(0.0f));
+        std::vector<glm::vec3> B(vcount, glm::vec3(0.0f));
+
+        auto V3 = [&](size_t i)
+        {
+            return glm::vec3(md.positions[3 * i + 0], md.positions[3 * i + 1], md.positions[3 * i + 2]);
+        };
+        auto N3 = [&](size_t i)
+        {
+            return glm::vec3(md.normals[3 * i + 0], md.normals[3 * i + 1], md.normals[3 * i + 2]);
+        };
+        auto UV2 = [&](size_t i)
+        {
+            return glm::vec2(md.texcoords[2 * i + 0], md.texcoords[2 * i + 1]);
+        };
+
+        // accumulate per-triangle
+        for (size_t i = 0; i + 2 < md.indices.size(); i += 3)
+        {
+            const uint32_t i0 = md.indices[i + 0];
+            const uint32_t i1 = md.indices[i + 1];
+            const uint32_t i2 = md.indices[i + 2];
+
+            const glm::vec3 p0 = V3(i0), p1 = V3(i1), p2 = V3(i2);
+            const glm::vec2 w0 = UV2(i0), w1 = UV2(i1), w2 = UV2(i2);
+
+            const glm::vec3 dp1 = p1 - p0;
+            const glm::vec3 dp2 = p2 - p0;
+            const glm::vec2 duv1 = w1 - w0;
+            const glm::vec2 duv2 = w2 - w0;
+
+            const float denom = duv1.x * duv2.y - duv1.y * duv2.x;
+            if (std::abs(denom) < 1e-8f)
+                continue;
+            const float r = 1.0f / denom;
+
+            const glm::vec3 t = (dp1 * duv2.y - dp2 * duv1.y) * r;
+            const glm::vec3 b = (dp2 * duv1.x - dp1 * duv2.x) * r;
+
+            T[i0] += t;
+            T[i1] += t;
+            T[i2] += t;
+            B[i0] += b;
+            B[i1] += b;
+            B[i2] += b;
+        }
+
+        // orthonormalize + handedness
+        md.tangents.resize(vcount * 4);
+        for (size_t i = 0; i < vcount; ++i)
+        {
+            glm::vec3 n = glm::normalize(N3(i));
+            glm::vec3 t = T[i];
+            if (glm::dot(t, t) < 1e-12f)
+            {
+                // fallback if degenerate — pick any axis not collinear with N
+                glm::vec3 ref = (std::abs(n.z) < 0.999f) ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+                t = glm::normalize(glm::cross(ref, n));
+            }
+            t = glm::normalize(t - n * glm::dot(n, t));
+            glm::vec3 b = glm::cross(n, t);
+            float w = (glm::dot(b, B[i]) < 0.0f) ? -1.0f : 1.0f;
+
+            md.tangents[4 * i + 0] = t.x;
+            md.tangents[4 * i + 1] = t.y;
+            md.tangents[4 * i + 2] = t.z;
+            md.tangents[4 * i + 3] = w;
+        }
+    }
+
+} // namespace
+
 namespace Asset
 {
 
@@ -159,8 +245,18 @@ namespace Asset
                         }
                         break;
 
+                    case cgltf_attribute_type_tangent:
+                        if (isVecN(acc, cgltf_type_vec4, 4))
+                        {
+                            copyAttributeFloats(acc, md.tangents); // 4 * V (x,y,z,w)
+                        }
+                        else
+                        {
+                            Logger::log(LogLevel::WARNING, "TANGENT accessor is not vec4; skipping.");
+                        }
+                        break;
+
                     default:
-                        // ignore tangents/colors/extra sets for now
                         break;
                     }
                 }
@@ -187,6 +283,11 @@ namespace Asset
                 if (md.indices.size() % 3 != 0)
                 {
                     Logger::log(LogLevel::WARNING, "Index count is not a multiple of 3; primitive may be invalid.");
+                }
+
+                if (md.tangents.empty() && !md.normals.empty() && !md.texcoords.empty())
+                {
+                    GenerateTangents(md);
                 }
 
                 meshes.push_back(std::move(md));

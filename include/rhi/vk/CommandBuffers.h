@@ -10,6 +10,11 @@ namespace Render
     struct ViewUniforms; // per-view UBO (view/proj/viewProj/etc.)
 }
 
+namespace Render
+{
+    class Material;
+}
+
 namespace Vk
 {
 
@@ -21,7 +26,7 @@ namespace Vk
 
     namespace Gfx
     {
-        class Mesh;
+        struct DrawItem;
     }
 
     /**
@@ -50,9 +55,8 @@ namespace Vk
                     const Framebuffers &framebuffers,
                     const GraphicsPipeline &pipeline,
                     const SwapChain &swapchain,
-                    const std::vector<const Gfx::Mesh *> &meshes,
-                    VkDescriptorSet viewSet,      // set=0
-                    VkDescriptorSet materialSet); // set=1
+                    const std::vector<Gfx::DrawItem> &items,
+                    VkDescriptorSet viewSet);
 
         [[nodiscard]] VkCommandBuffer operator[](std::size_t i) const { return buffers_[i]; }
         [[nodiscard]] std::size_t size() const { return buffers_.size(); }

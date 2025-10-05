@@ -99,23 +99,46 @@ namespace Vk
         viewBinding.binding = 0;
         viewBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         viewBinding.descriptorCount = 1;
-        viewBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        viewBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo viewDslCi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         viewDslCi.bindingCount = 1;
         viewDslCi.pBindings = &viewBinding;
         VK_CHECK(vkCreateDescriptorSetLayout(device.getDevice(), &viewDslCi, nullptr, &viewSetLayout));
 
-        // set = 1 (Material/albedo sampler for FS)
-        VkDescriptorSetLayoutBinding texBinding{};
-        texBinding.binding = 0;
-        texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texBinding.descriptorCount = 1;
-        texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // set = 1 (Material: 5 textures + 1 UBO for FS)
+        std::array<VkDescriptorSetLayoutBinding, 6> matBindings{};
+
+        auto makeImgBinding = [](uint32_t b)
+        {
+            VkDescriptorSetLayoutBinding x{};
+            x.binding = b;
+            x.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            x.descriptorCount = 1;
+            x.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // читаем в FS
+            return x;
+        };
+
+        // 0: baseColor (sRGB)
+        matBindings[0] = makeImgBinding(0);
+        // 1: normal (UNORM)
+        matBindings[1] = makeImgBinding(1);
+        // 2: metallic-roughness (UNORM)
+        matBindings[2] = makeImgBinding(2);
+        // 3: occlusion (UNORM)
+        matBindings[3] = makeImgBinding(3);
+        // 4: emissive (sRGB)
+        matBindings[4] = makeImgBinding(4);
+
+        // 5: material params UBO
+        matBindings[5].binding = 5;
+        matBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        matBindings[5].descriptorCount = 1;
+        matBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // параметры шейдера FS
 
         VkDescriptorSetLayoutCreateInfo matDslCi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        matDslCi.bindingCount = 1;
-        matDslCi.pBindings = &texBinding;
+        matDslCi.bindingCount = static_cast<uint32_t>(matBindings.size());
+        matDslCi.pBindings = matBindings.data();
         VK_CHECK(vkCreateDescriptorSetLayout(device.getDevice(), &matDslCi, nullptr, &materialSetLayout));
 
         // --- 11) Push constants: mat4 model (VS) ---

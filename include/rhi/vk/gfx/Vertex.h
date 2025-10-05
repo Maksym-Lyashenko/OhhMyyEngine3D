@@ -7,6 +7,7 @@
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 namespace Vk::Gfx
 {
@@ -26,9 +27,10 @@ namespace Vk::Gfx
      */
     struct Vertex
     {
-        glm::vec3 pos;    // location = 0
-        glm::vec3 normal; // location = 1
-        glm::vec2 uv;     // location = 2
+        glm::vec3 pos;     // location = 0
+        glm::vec3 normal;  // location = 1
+        glm::vec2 uv;      // location = 2
+        glm::vec4 tangent; // location = 3  (xyz = tangent, w = bitangent sign)
 
         /// Binding description for a single interleaved vertex buffer (binding = 0).
         [[nodiscard]] static VkVertexInputBindingDescription binding() noexcept
@@ -41,9 +43,9 @@ namespace Vk::Gfx
         }
 
         /// Attribute descriptions for pos/normal at locations 0/1.
-        [[nodiscard]] static std::array<VkVertexInputAttributeDescription, 3> attributes() noexcept
+        [[nodiscard]] static std::array<VkVertexInputAttributeDescription, 4> attributes() noexcept
         {
-            std::array<VkVertexInputAttributeDescription, 3> a{};
+            std::array<VkVertexInputAttributeDescription, 4> a{};
 
             // position (vec3)
             a[0].location = 0;
@@ -63,6 +65,12 @@ namespace Vk::Gfx
             a[2].format = VK_FORMAT_R32G32_SFLOAT;
             a[2].offset = static_cast<uint32_t>(offsetof(Vertex, uv));
 
+            // tangent (vec4) — xyz tangent, w = bitangent sign
+            a[3].location = 3;
+            a[3].binding = 0;
+            a[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            a[3].offset = static_cast<uint32_t>(offsetof(Vertex, tangent));
+
             return a;
         }
     };
@@ -71,6 +79,12 @@ namespace Vk::Gfx
     static_assert(offsetof(Vertex, pos) == 0, "pos must be at offset 0");
     static_assert(offsetof(Vertex, normal) == sizeof(glm::vec3), "normal must follow pos");
     static_assert(offsetof(Vertex, uv) == sizeof(glm::vec3) * 2, "uv must follow normal");
-    static_assert(sizeof(Vertex) == sizeof(glm::vec3) * 2 + sizeof(glm::vec2), "Vertex size must be 32 bytes");
+    static_assert(offsetof(Vertex, tangent) == sizeof(glm::vec3) * 2 + sizeof(glm::vec2), "tangent offset mismatch");
+    static_assert(sizeof(Vertex) ==
+                      sizeof(glm::vec3) +     // pos
+                          sizeof(glm::vec3) + // normal
+                          sizeof(glm::vec2) + // uv
+                          sizeof(glm::vec4),  // tangent
+                  "Vertex size must be 48 bytes (pos+normal+uv+tangent)");
 
 } // namespace Vk::Gfx

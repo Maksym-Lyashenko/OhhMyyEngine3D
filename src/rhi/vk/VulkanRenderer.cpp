@@ -21,16 +21,18 @@
 
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/gfx/Vertex.h"
-#include "rhi/vk/gfx/Texture2D.h"
 
 #include "render/OrbitCamera.h"
 #include "render/ViewUniforms.h"
+#include "render/materials/Material.h"
+#include "render/materials/MaterialSystem.h"
 
 #include "asset/io/GltfLoader.h"
 #include "asset/processing/MeshOptimize.h"
 
 #include "core/math/MathUtils.h"
 #include "rhi/vk/gfx/utils/MeshUtils.h"
+#include "rhi/vk/gfx/DrawItem.h"
 
 using namespace Core;
 using namespace Core::MathUtils;
@@ -82,6 +84,15 @@ namespace Vk
 
         // Graphics pipeline (no baked viewport/scissor — dynamic; layout has set=0 View UBO + PC for model)
         graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *renderPass);
+
+        // Materials
+        materials = std::make_unique<Render::MaterialSystem>();
+        // TEMP: Forwarding one-time commands for texture upload
+        materials->setUploadCmd(commandPool->get(), logicalDevice->getGraphicsQueue()); // TEMP
+        materials->init(physicalDevice->getDevice(),
+                        logicalDevice->getDevice(),
+                        graphicsPipeline->getMaterialSetLayout(),
+                        /*maxMaterials*/ 128);
 
         // Per-swapchain-image color views
         imageViews = std::make_unique<ImageViews>(logicalDevice->getDevice(),
@@ -148,7 +159,7 @@ namespace Vk
 
         MeshStats after = collectStats(meshDatas);
 
-        CORE_LOG_INFO(
+        CORE_LOG_DEBUG(
             "Mesh optimize: vertices " + std::to_string(before.vertices) + " -> " + std::to_string(after.vertices) +
             ", indices " + std::to_string(before.indices) + " -> " + std::to_string(after.indices) +
             ", tris " + std::to_string(before.triangles()) + " -> " + std::to_string(after.triangles()));
@@ -160,32 +171,70 @@ namespace Vk
         {
             std::vector<Gfx::Vertex> vertices;
             vertices.reserve(md.positions.size() / 3);
-            for (size_t i = 0; i < md.positions.size(); i += 3)
+
+            const size_t vertCount = md.positions.size() / 3;
+            const bool hasNormals = (md.normals.size() == md.positions.size());
+            const bool hasUVs = (md.texcoords.size() / 2 == vertCount);
+            const bool hasTangents = (md.tangents.size() == vertCount * 4); // glTF tangent vec4 per-vertex
+
+            for (size_t i = 0; i < vertCount; ++i)
             {
                 Gfx::Vertex v{};
-                v.pos = {md.positions[i + 0], md.positions[i + 1], md.positions[i + 2]};
-                if (md.normals.size() == md.positions.size())
+
+                // position
+                v.pos = {
+                    md.positions[i * 3 + 0],
+                    md.positions[i * 3 + 1],
+                    md.positions[i * 3 + 2]};
+
+                // normal (fallback to up if missing)
+                if (hasNormals)
                 {
-                    v.normal = {md.normals[i + 0], md.normals[i + 1], md.normals[i + 2]};
+                    v.normal = {
+                        md.normals[i * 3 + 0],
+                        md.normals[i * 3 + 1],
+                        md.normals[i * 3 + 2]};
                 }
                 else
                 {
-                    // Fallback if normals are missing
                     v.normal = {0.0f, 1.0f, 0.0f};
                 }
-                if (md.texcoords.size() / 2 == md.positions.size() / 3)
+
+                // uv (fallback to 0,0)
+                if (hasUVs)
                 {
-                    v.uv = {md.texcoords[(i / 3) * 2 + 0],
-                            md.texcoords[(i / 3) * 2 + 1]};
+                    v.uv = {
+                        md.texcoords[i * 2 + 0],
+                        md.texcoords[i * 2 + 1]};
                 }
                 else
                 {
                     v.uv = {0.0f, 0.0f};
                 }
 
+                // tangent (xyz = tangent, w = bitangent sign). If missing, build a cheap safe fallback.
+                if (hasTangents)
+                {
+                    v.tangent = {
+                        md.tangents[i * 4 + 0],
+                        md.tangents[i * 4 + 1],
+                        md.tangents[i * 4 + 2],
+                        md.tangents[i * 4 + 3] // +1 or -1
+                    };
+                }
+                else
+                {
+                    // --- Fallback tangent generation (very cheap, per-vertex, not per-triangle accurate) ---
+                    // Pick some axis not parallel to the normal, build a tangent orthonormal to the normal.
+                    // This avoids NaNs and makes the normal map behave like a flat normal (mostly).
+                    glm::vec3 n = glm::normalize(v.normal);
+                    glm::vec3 arbitrary = (std::abs(n.y) < 0.999f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+                    glm::vec3 t = glm::normalize(arbitrary - n * glm::dot(n, arbitrary));
+                    v.tangent = glm::vec4(t, 1.0f); // assume positive bitangent sign
+                }
+
                 vertices.push_back(v);
             }
-
             auto m = std::make_unique<Gfx::Mesh>();
             m->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
                       vertices, md.indices, md.localTransform);
@@ -202,20 +251,27 @@ namespace Vk
         // Allocates UBO buffers and descriptor sets (set=0)
         ctx->createViewResources(physicalDevice->getDevice());
 
-        // --- Texture (TEMP) -----------------------------------------------------------
-        albedoTex = std::make_unique<Gfx::Texture2D>();
-        albedoTex->loadFromFile(
-            physicalDevice->getDevice(),
-            logicalDevice->getDevice(),
-            commandPool->get(),
-            logicalDevice->getGraphicsQueue(),
-            "assets/makarov/textures/makarov_baseColor.png", // TODO: взять из материала glTF
-            /*genMips*/ true,
-            /*fmt*/ VK_FORMAT_R8G8B8A8_SRGB);
+        // --- Materials (create one albedo-only material for the whole scene) -------------
+        Render::MaterialDesc md{};
+        md.baseColorPath = "assets/makarov/textures/makarov_baseColor.png"; // TODO: read from glTF
+        md.normalPath = "assets/makarov/textures/makarov_normal.png";
+        md.mrPath = "assets/makarov/textures/makarov_metallicRoughness.png";
 
-        // (TEMP) One material set for the whole scene
-        ctx->createMaterialSet(albedoTex->view(), albedoTex->sampler(),
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        auto mat = materials->createMaterial(md); // shared_ptr<IMaterial>
+
+        sceneMaterials.clear();
+        sceneMaterials.push_back(mat);
+
+        // Build drawItems from meshes + single material
+        drawItems.clear();
+        drawItems.reserve(gpuMeshes.size());
+        for (auto &m : gpuMeshes)
+        {
+            drawItems.push_back(Vk::Gfx::DrawItem{
+                /*mesh*/ m.get(),
+                /*material*/ mat.get() // non-owning
+            });
+        }
 
         // --- Camera fitting --------------------------------------------------------
         const AABB box = computeWorldAABB(ctx->drawList);
@@ -246,7 +302,7 @@ namespace Vk
 
             // Record for image i: pass descriptor set (set=0)
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, ctx->drawList, ctx->viewSet(i), ctx->getMaterialSet());
+                                   *swapChain, drawItems, ctx->viewSet(i));
         }
 
         // --- Frame loop driver -----------------------------------------------------
@@ -274,14 +330,15 @@ namespace Vk
 
         frameRenderer.reset();
 
+        sceneMaterials.clear();
+        materials.reset();
+
         if (ctx)
         {
             // owns per-image UBOs/descriptor sets
             ctx->destroyViewResources();
             ctx.reset();
         }
-
-        albedoTex.reset();
 
         commandBuffers.reset();
         gpuMeshes.clear(); // destroy VBO/IBO via Mesh destructors
@@ -366,9 +423,6 @@ namespace Vk
         ctx->drawList = drawList;
         ctx->createViewResources(physicalDevice->getDevice());
 
-        ctx->createMaterialSet(albedoTex->view(), albedoTex->sampler(),
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
         // 6) Record new command buffers (and refresh UBOs)
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
@@ -381,7 +435,7 @@ namespace Vk
             ctx->updateViewUbo(i, u);
 
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, ctx->drawList, ctx->viewSet(i), ctx->getMaterialSet());
+                                   *swapChain, drawItems, ctx->viewSet(i));
         }
 
         // 7) Recreate driver

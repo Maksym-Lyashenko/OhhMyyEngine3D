@@ -9,6 +9,8 @@
 namespace Render
 {
     class OrbitCamera;
+    class MaterialSystem;
+    class Material;
 }
 
 namespace Vk
@@ -16,7 +18,8 @@ namespace Vk
 
     namespace Gfx
     {
-        class Texture2D;
+        class Mesh;
+        struct DrawItem;
     }
 
     class VulkanInstance;
@@ -34,11 +37,6 @@ namespace Vk
     struct RendererContext;
     class FrameRenderer;
     class DepthResources;
-
-    namespace Gfx
-    {
-        class Mesh;
-    }
 
     /**
      * @brief High-level Vulkan application driver.
@@ -115,7 +113,9 @@ namespace Vk
         // ---- Camera ----
         std::unique_ptr<Render::OrbitCamera> orbitCamera; // Simple orbit camera for first view
 
-        std::unique_ptr<Gfx::Texture2D> albedoTex; // TODO:TEMPORARY
+        std::vector<std::shared_ptr<Render::Material>> sceneMaterials;
+        std::unique_ptr<Render::MaterialSystem> materials;
+        std::vector<Gfx::DrawItem> drawItems;
 
         // ---- State flags ----
         bool framebufferResized = false; // Legacy flag (can be driven by GLFW callback)

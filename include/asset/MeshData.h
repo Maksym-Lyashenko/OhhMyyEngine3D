@@ -26,6 +26,7 @@ namespace Asset
         std::vector<float> positions; // xyzxyz...
         std::vector<float> normals;   // nxnynz... (optional)
         std::vector<float> texcoords; // uvuv...   (optional)
+        std::vector<float> tangents;  // 4 * V  (x,y,z,w), optional
         std::vector<Index> indices;   // triangle indices (3*i)
 
         glm::mat4 localTransform{1.0f};
@@ -43,6 +44,7 @@ namespace Asset
             positions.clear();
             normals.clear();
             texcoords.clear();
+            tangents.clear();
             indices.clear();
             localTransform = glm::mat4(1.0f);
         }
@@ -53,6 +55,7 @@ namespace Asset
             positions.shrink_to_fit();
             normals.shrink_to_fit();
             texcoords.shrink_to_fit();
+            tangents.shrink_to_fit();
             indices.shrink_to_fit();
         }
     };
