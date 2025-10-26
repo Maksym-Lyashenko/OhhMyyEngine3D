@@ -1,7 +1,8 @@
 #include "platform/WindowManager.h"
 
-#include <GLFW/glfw3.h>
 #include "core/Logger.h"
+
+#include <algorithm>
 
 namespace Platform
 {
@@ -43,9 +44,62 @@ namespace Platform
         return glfwWindowShouldClose(window_) == GLFW_TRUE;
     }
 
-    void WindowManager::pollEvents() const noexcept
+    void WindowManager::pollEvents() noexcept
     {
+        std::copy(currKeys_.begin(), currKeys_.end(), prevKeys_.begin());
+        std::copy(currMouse_.begin(), currMouse_.end(), prevMouse_.begin());
+
         glfwPollEvents();
+
+        // --- keyboard ---
+        // skip non-valide key codes < GLFW_KEY_SPACE
+        for (int k = GLFW_KEY_SPACE; k <= GLFW_KEY_LAST; ++k)
+        {
+            currKeys_[k] = (glfwGetKey(window_, k) == GLFW_PRESS) ? 1u : 0u;
+        }
+
+        // --- mouse ---
+        for (int b = 0; b < 8; ++b)
+        {
+            currMouse_[b] = (glfwGetMouseButton(window_, b) == GLFW_PRESS) ? 1u : 0u;
+        }
+
+        // --- mouse delta ---
+        double x, y;
+        glfwGetCursorPos(window_, &x, &y);
+
+        if (firstMouse_)
+        {
+            lastX_ = x;
+            lastY_ = y;
+            dx_ = 0.f;
+            dy_ = 0.f;
+            firstMouse_ = false;
+        }
+        else
+        {
+            dx_ = static_cast<float>(x - lastX_);
+            dy_ = static_cast<float>(y - lastY_);
+            lastX_ = x;
+            lastY_ = y;
+        }
+
+        // update width_/height_, for renderer always know actual sizes
+        int fbw, fbh;
+        glfwGetFramebufferSize(window_, &fbw, &fbh);
+        width_ = fbw;
+        height_ = fbh;
+    }
+
+    bool WindowManager::isKeyDown(int key) const noexcept { return currKeys_[key] != 0; }
+    bool WindowManager::wasKeyPressed(int key) const noexcept { return currKeys_[key] && !prevKeys_[key]; }
+    glm::vec2 WindowManager::mouseDelta() const noexcept { return {dx_, dy_}; }
+    bool WindowManager::isMouseDown(int b) const noexcept { return currMouse_[b] != 0; }
+
+    void WindowManager::captureMouse(bool enabled) noexcept
+    {
+        glfwSetInputMode(window_, GLFW_CURSOR, enabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+        firstMouse_ = true; // for no jumping dx/dy when on
     }
 
     std::vector<const char *> WindowManager::getRequiredExtensions() const

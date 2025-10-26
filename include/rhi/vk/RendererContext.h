@@ -9,6 +9,8 @@
 
 #include "rhi/vk/gfx/Mesh.h"
 
+#include "rhi/vk/FrameResources.h"
+
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <cstdint>
@@ -32,6 +34,10 @@ namespace Vk
      * Does NOT own:
      *  - GraphicsPipeline's descriptor set layout (taken from pipeline)
      */
+
+    extern VkDescriptorPool viewDescPool;                  // single pool for all view sets
+    extern std::vector<Vk::FrameResources> frameResources; // one per swapchain image
+
     struct RendererContext
     {
         VulkanLogicalDevice &device;
@@ -44,35 +50,24 @@ namespace Vk
         // Draw list is just borrowed pointers (no ownership)
         std::vector<const Vk::Gfx::Mesh *> drawList;
 
-        // ---- (TEMPORARY) View UBO/Descriptors (owned here) ----
-        // TODO: Move to a dedicated "ViewResources" or "FrameResources" module.
-        VkDescriptorPool descPool = VK_NULL_HANDLE; // TEMPORARY
-        std::vector<VkBuffer> viewUbos;             // TEMPORARY: per-swapchain-image UBO buffers
-        std::vector<VkDeviceMemory> viewUboMem;     // TEMPORARY: matching memory objects
-        std::vector<VkDescriptorSet> viewSets;      // TEMPORARY: set=0 per image
-
-        VkDescriptorPool materialPool = VK_NULL_HANDLE; // TEMPORARY
-        VkDescriptorSet materialSet = VK_NULL_HANDLE;   // TEMPORARY
-
-        // TEMPORARY : create a single material descriptor set(set = 1).
-        // Expects a valid sampled image: view + sampler + layout (typically SHADER_READ_ONLY_OPTIMAL).
-        void createMaterialSet(VkImageView imageView,
-                               VkSampler sampler,
-                               VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        VkDescriptorSet getMaterialSet() const noexcept { return materialSet; }
-
         RendererContext(VulkanLogicalDevice &d,
                         SwapChain &s,
                         CommandBuffers &c,
                         SyncObjects &so,
                         RenderPass &rp,
-                        GraphicsPipeline &gp)
+                        GraphicsPipeline &gp) noexcept
             : device(d), swapChain(s), commandBuffers(c),
               syncObjects(so), renderPass(rp), graphicsPipeline(gp) {}
 
+        ~RendererContext() noexcept { destroyViewResources(); }
+
+        RendererContext(const RendererContext &) = delete;
+        RendererContext &operator=(const RendererContext &) = delete;
+        RendererContext(RendererContext &&) = default;
+        RendererContext &operator=(RendererContext &&) = default;
+
         /**
-         * @brief (TEMPORARY) Allocate per-image UBOs, descriptor pool and descriptor sets.
+         * @brief Allocate per-image UBOs, descriptor pool and descriptor sets.
          * @param physDev Physical device (for memory type selection)
          *
          * Lifecycle: call after pipeline creation (we need its set layout) and after swapchain create.
@@ -81,21 +76,21 @@ namespace Vk
         void createViewResources(VkPhysicalDevice physDev);
 
         /**
-         * @brief (TEMPORARY) Update UBO contents for the given swapchain image.
+         * @brief Update UBO contents for the given swapchain image.
          *        Simple map/memcpy/unmap (HOST_VISIBLE | HOST_COHERENT).
          */
         void updateViewUbo(uint32_t imageIndex, const Render::ViewUniforms &uboData) const;
 
         /**
-         * @brief (TEMPORARY) Destroy UBO buffers/memory and descriptor pool.
+         * @brief Destroy UBO buffers/memory and descriptor pool.
          *        Safe to call multiple times.
          */
         void destroyViewResources() noexcept;
 
         // Convenience accessor (valid after createViewResources).
-        VkDescriptorSet viewSet(uint32_t imageIndex) const noexcept
+        [[nodiscard]] VkDescriptorSet viewSet(uint32_t imageIndex) const noexcept
         {
-            return viewSets[imageIndex];
+            return frameResources[imageIndex].viewSet;
         }
     };
 

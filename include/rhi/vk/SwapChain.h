@@ -1,7 +1,9 @@
 #pragma once
+
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <cstdint>
+#include <string>
 
 namespace Platform
 {
@@ -52,6 +54,9 @@ namespace Vk
         VkFormat getImageFormat() const noexcept { return swapChainImageFormat; }
         VkExtent2D getExtent() const noexcept { return extent; }
 
+        VkPresentModeKHR presentMode() const noexcept { return presentMode_; }
+        const std::string &presentModeName() const noexcept { return presentModeName_; }
+
     private:
         const VulkanPhysicalDevice &physicalDevice;
         const VulkanLogicalDevice &logicalDevice;
@@ -62,6 +67,9 @@ namespace Vk
         std::vector<VkImage> images;
         VkFormat swapChainImageFormat{};
         VkExtent2D extent{};
+
+        VkPresentModeKHR presentMode_{VK_PRESENT_MODE_FIFO_KHR};
+        std::string presentModeName_ = "FIFO";
 
         // Helpers
         VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &availableFormats) const;

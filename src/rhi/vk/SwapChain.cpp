@@ -54,7 +54,29 @@ namespace Vk
 
         // --- 2) Choose config ---
         const VkSurfaceFormatKHR surfaceFormat = chooseSurfaceFormat(formats);
-        const VkPresentModeKHR presentMode = choosePresentMode(presentModes);
+        presentMode_ = choosePresentMode(presentModes);
+
+        switch (presentMode_)
+        {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:
+            presentModeName_ = "IMMEDIATE";
+            break;
+        case VK_PRESENT_MODE_MAILBOX_KHR:
+            presentModeName_ = "MAILBOX";
+            break;
+        case VK_PRESENT_MODE_FIFO_KHR:
+            presentModeName_ = "FIFO";
+            break;
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+            presentModeName_ = "FIFO_RELAXED";
+            break;
+        default:
+            break;
+        }
+
+        Core::Logger::log(Core::LogLevel::INFO,
+                          std::string("SwapChain present mode = ") + presentModeName_);
+
         extent = chooseExtent(capabilities);
 
         // --- 3) Decide image count ---
@@ -91,7 +113,7 @@ namespace Vk
 
         info.preTransform = capabilities.currentTransform;
         info.compositeAlpha = chooseCompositeAlpha(capabilities.supportedCompositeAlpha);
-        info.presentMode = presentMode;
+        info.presentMode = presentMode_;
         info.clipped = VK_TRUE;
         info.oldSwapchain = swapChain; // pass old chain if recreating (may be VK_NULL_HANDLE)
 

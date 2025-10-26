@@ -1,9 +1,16 @@
 #pragma once
 
+#include <GLFW/glfw3.h>
+
+#define GLM_ENABLE_EXPERIMENTAL
+
 #include <cstdint>
 #include <functional>
 #include <vector>
 #include <string>
+#include <array>
+#include <glm/vec2.hpp>
+#include <glm/ext/vector_float2.hpp>
 
 struct GLFWwindow; // forward-declare to avoid pulling GLFW in the header
 
@@ -21,6 +28,12 @@ namespace Platform
         WindowManager(WindowManager &&) = delete;
         WindowManager &operator=(WindowManager &&) = delete;
 
+        bool isKeyDown(int key) const noexcept;      // GLFW_KEY_*
+        bool wasKeyPressed(int key) const noexcept;  // edge (this frame)
+        glm::vec2 mouseDelta() const noexcept;       // dx,dy за кадр
+        bool isMouseDown(int button) const noexcept; // GLFW_MOUSE_BUTTON_*
+        void captureMouse(bool enabled) noexcept;
+
         [[nodiscard]] GLFWwindow *getWindow() const noexcept { return window_; }
         [[nodiscard]] int width() const noexcept { return width_; }
         [[nodiscard]] int height() const noexcept { return height_; }
@@ -30,7 +43,7 @@ namespace Platform
         std::function<void(int, int)> onFramebufferResize;
 
         [[nodiscard]] bool shouldClose() const noexcept;
-        void pollEvents() const noexcept;
+        void pollEvents() noexcept;
 
         // Vulkan instance extensions required by GLFW
         [[nodiscard]] std::vector<const char *> getRequiredExtensions() const;
@@ -57,6 +70,17 @@ namespace Platform
 
         // Helper to pick monitor for fullscreen
         static GLFWwindow *getWindowHandle(GLFWwindow *w) noexcept { return w; }
+
+        std::array<unsigned char, GLFW_KEY_LAST + 1> currKeys_{};
+        std::array<unsigned char, GLFW_KEY_LAST + 1> prevKeys_{};
+
+        // Мышь
+        std::array<unsigned char, 8> currMouse_{};
+        std::array<unsigned char, 8> prevMouse_{};
+
+        double lastX_{0.0}, lastY_{0.0};
+        float dx_{0.0f}, dy_{0.0f};
+        bool firstMouse_{true};
     };
 
 } // namespace Platform

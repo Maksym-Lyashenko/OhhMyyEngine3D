@@ -38,9 +38,9 @@ namespace Vk
         VkPipeline getPipeline() const { return pipeline; }
         VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
 
-        // TEMPORARY: external access for context to allocate sets
-        VkDescriptorSetLayout getViewSetLayout() const { return viewSetLayout; }         // set=0
-        VkDescriptorSetLayout getMaterialSetLayout() const { return materialSetLayout; } // set=1
+        // external access for context to allocate sets
+        VkDescriptorSetLayout getViewSetLayout() const noexcept { return viewSetLayout; } // set=0
+        VkDescriptorSetLayout getMaterialSetLayout() const { return materialSetLayout; }  // set=1
 
     private:
         const VulkanLogicalDevice &device;

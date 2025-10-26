@@ -9,19 +9,13 @@
 namespace Render
 {
     class OrbitCamera;
+    class FreeCamera;
+    class Scene;
     class MaterialSystem;
-    class Material;
 }
 
 namespace Vk
 {
-
-    namespace Gfx
-    {
-        class Mesh;
-        struct DrawItem;
-    }
-
     class VulkanInstance;
     class Surface;
     class VulkanPhysicalDevice;
@@ -107,15 +101,12 @@ namespace Vk
         std::unique_ptr<FrameRenderer> frameRenderer; // Acquire → submit → present per frame
 
         // ---- Content ----
-        std::vector<std::unique_ptr<Gfx::Mesh>> gpuMeshes; // Owned GPU meshes
-        std::vector<const Gfx::Mesh *> drawList;           // Non-owning pointers to meshes to draw
+        std::unique_ptr<Render::Scene> scene;
+        std::unique_ptr<Render::MaterialSystem> materials;
 
         // ---- Camera ----
         std::unique_ptr<Render::OrbitCamera> orbitCamera; // Simple orbit camera for first view
-
-        std::vector<std::shared_ptr<Render::Material>> sceneMaterials;
-        std::unique_ptr<Render::MaterialSystem> materials;
-        std::vector<Gfx::DrawItem> drawItems;
+        std::unique_ptr<Render::FreeCamera> freeCamera;
 
         // ---- State flags ----
         bool framebufferResized = false; // Legacy flag (can be driven by GLFW callback)

@@ -23,6 +23,8 @@
 #include "rhi/vk/gfx/Vertex.h"
 
 #include "render/OrbitCamera.h"
+#include "render/FreeCamera.h"
+#include "render/Scene.h"
 #include "render/ViewUniforms.h"
 #include "render/materials/Material.h"
 #include "render/materials/MaterialSystem.h"
@@ -39,6 +41,7 @@ using namespace Core::MathUtils;
 using Vk::Gfx::Utils::computeWorldAABB;
 
 #include <glm/glm.hpp>
+#include <chrono>
 
 namespace Vk
 {
@@ -112,170 +115,94 @@ namespace Vk
         syncObjects = std::make_unique<SyncObjects>(logicalDevice->getDevice(),
                                                     static_cast<uint32_t>(swapChain->getImages().size()));
 
-        // --- Assets → GPU meshes ---------------------------------------------------
-        // Make sure nothing is executing while we (re)upload meshes
-        VK_CHECK(vkDeviceWaitIdle(logicalDevice->getDevice()));
-        gpuMeshes.clear();
-        drawList.clear();
+        // --- Materials system (we still create it here, because it depends on VkDevice etc.) -----------------
+        materials = std::make_unique<Render::MaterialSystem>();
+        materials->setUploadCmd(commandPool->get(), logicalDevice->getGraphicsQueue());
+        materials->init(
+            physicalDevice->getDevice(),
+            logicalDevice->getDevice(),
+            graphicsPipeline->getMaterialSetLayout(),
+            /*maxMaterials*/ 128);
 
-        // TODO: replace hardcoded path with asset manager/root config
-        auto meshDatas = Asset::GltfLoader::loadMeshes("assets/makarov/scene.gltf");
+        // --- Create Scene and load content ------------------------------------
+        scene = std::make_unique<Render::Scene>();
 
-        // ---- Optimize meshes (meshoptimizer) & collect stats ----
-        struct MeshStats
-        {
-            size_t vertices{};
-            size_t indices{};
-            size_t triangles() const { return indices / 3; }
-        };
+        scene->loadModel(
+            "assets/makarov/scene.gltf",
+            physicalDevice->getDevice(),
+            logicalDevice->getDevice(),
+            *materials);
 
-        auto collectStats = [](const std::vector<Asset::MeshData> &mds)
-        {
-            MeshStats s{};
-            for (auto &m : mds)
-            {
-                s.vertices += m.positions.size() / 3;
-                s.indices += m.indices.size();
-            }
-            return s;
-        };
-
-        MeshStats before = collectStats(meshDatas);
-
-        // Tune settings if needed
-        Asset::Processing::OptimizeSettings opt{};
-        opt.optimizeCache = true;
-        opt.optimizeOverdraw = true;
-        opt.overdrawThreshold = 1.05f;
-        opt.optimizeFetch = true;
-        opt.simplify = true;            // включить LOD-упрощение
-        opt.simplifyTargetRatio = 0.6f; // до 60% от исходных индексов
-        opt.simplifyError = 1e-2f;
-
-        for (auto &md : meshDatas)
-        {
-            Asset::Processing::OptimizeMeshInPlace(md, opt);
-        }
-
-        MeshStats after = collectStats(meshDatas);
-
-        CORE_LOG_DEBUG(
-            "Mesh optimize: vertices " + std::to_string(before.vertices) + " -> " + std::to_string(after.vertices) +
-            ", indices " + std::to_string(before.indices) + " -> " + std::to_string(after.indices) +
-            ", tris " + std::to_string(before.triangles()) + " -> " + std::to_string(after.triangles()));
-
-        gpuMeshes.reserve(meshDatas.size());
-        drawList.reserve(meshDatas.size());
-
-        for (auto &md : meshDatas)
-        {
-            std::vector<Gfx::Vertex> vertices;
-            vertices.reserve(md.positions.size() / 3);
-
-            const size_t vertCount = md.positions.size() / 3;
-            const bool hasNormals = (md.normals.size() == md.positions.size());
-            const bool hasUVs = (md.texcoords.size() / 2 == vertCount);
-            const bool hasTangents = (md.tangents.size() == vertCount * 4); // glTF tangent vec4 per-vertex
-
-            for (size_t i = 0; i < vertCount; ++i)
-            {
-                Gfx::Vertex v{};
-
-                // position
-                v.pos = {
-                    md.positions[i * 3 + 0],
-                    md.positions[i * 3 + 1],
-                    md.positions[i * 3 + 2]};
-
-                // normal (fallback to up if missing)
-                if (hasNormals)
-                {
-                    v.normal = {
-                        md.normals[i * 3 + 0],
-                        md.normals[i * 3 + 1],
-                        md.normals[i * 3 + 2]};
-                }
-                else
-                {
-                    v.normal = {0.0f, 1.0f, 0.0f};
-                }
-
-                // uv (fallback to 0,0)
-                if (hasUVs)
-                {
-                    v.uv = {
-                        md.texcoords[i * 2 + 0],
-                        md.texcoords[i * 2 + 1]};
-                }
-                else
-                {
-                    v.uv = {0.0f, 0.0f};
-                }
-
-                // tangent (xyz = tangent, w = bitangent sign). If missing, build a cheap safe fallback.
-                if (hasTangents)
-                {
-                    v.tangent = {
-                        md.tangents[i * 4 + 0],
-                        md.tangents[i * 4 + 1],
-                        md.tangents[i * 4 + 2],
-                        md.tangents[i * 4 + 3] // +1 or -1
-                    };
-                }
-                else
-                {
-                    // --- Fallback tangent generation (very cheap, per-vertex, not per-triangle accurate) ---
-                    // Pick some axis not parallel to the normal, build a tangent orthonormal to the normal.
-                    // This avoids NaNs and makes the normal map behave like a flat normal (mostly).
-                    glm::vec3 n = glm::normalize(v.normal);
-                    glm::vec3 arbitrary = (std::abs(n.y) < 0.999f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-                    glm::vec3 t = glm::normalize(arbitrary - n * glm::dot(n, arbitrary));
-                    v.tangent = glm::vec4(t, 1.0f); // assume positive bitangent sign
-                }
-
-                vertices.push_back(v);
-            }
-            auto m = std::make_unique<Gfx::Mesh>();
-            m->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
-                      vertices, md.indices, md.localTransform);
-
-            drawList.push_back(m.get());
-            gpuMeshes.push_back(std::move(m));
-        }
+        // scene now contains:
+        // - gpu meshes
+        // - materials
+        // - draw items
+        // - world bounds
 
         // --- Renderer context + per-image View UBO/sets ---------------------------
         ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
                                                 *syncObjects, *renderPass, *graphicsPipeline);
-        ctx->drawList = drawList;
+        // The RendererContext only needs the list of meshes to draw (of DrawItems).
+        // Currently RendererContext::drawList was std::vector<const Mesh*>.
+        // We can still give it the meshes indirectly via scene->drawItems().
+        //
+        // Option A: keep ctx->drawList == vector<const Mesh*> for now:
+        {
+            ctx->drawList.clear();
+            ctx->drawList.reserve(scene->drawItems().size());
+            for (auto &di : scene->drawItems())
+            {
+                ctx->drawList.push_back(di.mesh); // di.mesh is Mesh*
+            }
+        }
 
         // Allocates UBO buffers and descriptor sets (set=0)
         ctx->createViewResources(physicalDevice->getDevice());
 
-        // --- Materials (create one albedo-only material for the whole scene) -------------
-        Render::MaterialDesc md{};
-        md.baseColorPath = "assets/makarov/textures/makarov_baseColor.png"; // TODO: read from glTF
-        md.normalPath = "assets/makarov/textures/makarov_normal.png";
-        md.mrPath = "assets/makarov/textures/makarov_metallicRoughness.png";
+        // --- Camera setup using Scene bounds --------------------------------------------------------
+        const Core::MathUtils::AABB &box = scene->worldBounds();
 
-        auto mat = materials->createMaterial(md); // shared_ptr<IMaterial>
+        // for freeCamera
+        glm::vec3 center = 0.5f * (box.min + box.max);
+        glm::vec3 extents = (box.max - box.min) * 0.5f;
+        float radius = glm::length(extents);
 
-        sceneMaterials.clear();
-        sceneMaterials.push_back(mat);
+        // start distance for freeCamera
+        float dist = radius * 2.0f;
 
-        // Build drawItems from meshes + single material
-        drawItems.clear();
-        drawItems.reserve(gpuMeshes.size());
-        for (auto &m : gpuMeshes)
+        // put freeCamera a bit from top and under degree
+        glm::vec3 eye = center + glm::vec3(dist * 0.5f, dist * 0.3f, dist * 1.0f);
+
+        // create freeCamera
+        if (!freeCamera)
         {
-            drawItems.push_back(Vk::Gfx::DrawItem{
-                /*mesh*/ m.get(),
-                /*material*/ mat.get() // non-owning
-            });
+            freeCamera = std::make_unique<Render::FreeCamera>(
+                eye,
+                /*yawDeg   */ 0.0f,
+                /*pitchDeg */ 0.0f,
+                /*fovYDeg  */ 32.0f,
+                /*aspect   */ swapChain->getExtent().width /
+                    float(swapChain->getExtent().height),
+                /*near*/ 0.05f,
+                /*far */ 2000.0f);
+
+            freeCamera->lookAt(eye, center);
+        }
+        else
+        {
+            freeCamera->setAspect(
+                swapChain->getExtent().width /
+                float(swapChain->getExtent().height));
         }
 
-        // --- Camera fitting --------------------------------------------------------
-        const AABB box = computeWorldAABB(ctx->drawList);
+        if (freeCamera)
+        {
+            freeCamera->setAspect(
+                swapChain->getExtent().width /
+                float(swapChain->getExtent().height));
+        }
 
+        // orbitCamera is now optional, can keep or drop later
         if (!orbitCamera)
         {
             orbitCamera = std::make_unique<Render::OrbitCamera>();
@@ -289,20 +216,23 @@ namespace Vk
                                 /*pad=*/1.05f, /*lift=*/0.06f);
 
         // --- Record command buffers ----------------------------------------------
+        // drawItems we now get from Scene
+        const auto &drawItemsRef = scene->drawItems();
+
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
             // Update per-image View UBO
             Render::ViewUniforms u{};
-            u.view = orbitCamera->view();
-            u.proj = orbitCamera->proj();
+            u.view = freeCamera->view();
+            u.proj = freeCamera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = glm::vec4(orbitCamera->position(), 1.0f); // std140-friendly
+            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f); // std140-friendly
 
             ctx->updateViewUbo(i, u);
 
             // Record for image i: pass descriptor set (set=0)
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, drawItems, ctx->viewSet(i));
+                                   *swapChain, drawItemsRef, ctx->viewSet(i));
         }
 
         // --- Frame loop driver -----------------------------------------------------
@@ -311,9 +241,95 @@ namespace Vk
 
     void VulkanRenderer::mainLoop()
     {
+        using clock = std::chrono::steady_clock;
+        auto prev = clock::now();
+
+        // for FPS statistic
+        double fpsTimerAcc = 0.0;
+        int fpsFrameAcc = 0;
+        float smoothedFps = 0.0f;
+
         while (!window.shouldClose())
         {
+            auto now = clock::now();
+            float dt = std::chrono::duration<float>(now - prev).count();
+            prev = now;
+            if (dt > 0.1f)
+                dt = 0.1f;
+
+            // for FPS
+            fpsTimerAcc += dt;
+            fpsFrameAcc += 1;
+            // once in 0.25sec update smooth FPS
+            if (fpsFrameAcc >= 0.25)
+            {
+                smoothedFps = float(fpsFrameAcc / fpsTimerAcc);
+                fpsTimerAcc = 0.0;
+                fpsFrameAcc = 0;
+            }
+
             window.pollEvents();
+
+            if (window.wasKeyPressed(GLFW_KEY_F1))
+            {
+                // переключатель захвата мыши
+                static bool cap = false;
+                cap = !cap;
+                window.captureMouse(cap);
+            }
+
+            if (window.isMouseDown(GLFW_MOUSE_BUTTON_RIGHT))
+            {
+                glm::vec2 md = window.mouseDelta();
+                freeCamera->addYawPitch(md.x * 0.1f, -md.y * 0.1f);
+            }
+
+            glm::vec3 v(0);
+            const float spd = 100.0f;
+            if (window.isKeyDown(GLFW_KEY_W))
+                v.z += spd * dt;
+            if (window.isKeyDown(GLFW_KEY_S))
+                v.z -= spd * dt;
+            if (window.isKeyDown(GLFW_KEY_A))
+                v.x -= spd * dt;
+            if (window.isKeyDown(GLFW_KEY_D))
+                v.x += spd * dt;
+            if (window.isKeyDown(GLFW_KEY_E))
+                v.y += spd * dt;
+            if (window.isKeyDown(GLFW_KEY_Q))
+                v.y -= spd * dt;
+            freeCamera->moveLocal(v);
+
+            Render::ViewUniforms u{};
+            u.view = freeCamera->view();
+            u.proj = freeCamera->proj();
+            u.viewProj = u.proj * u.view;
+            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f);
+
+            for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
+            {
+                ctx->updateViewUbo(i, u);
+            }
+
+            // --- DEBUG HEADER --- //
+            {
+                glm::vec3 p = freeCamera->position();
+
+                char titleBuf[512];
+                std::snprintf(
+                    titleBuf,
+                    sizeof(titleBuf),
+                    "FPS %.1f | Cam (%.2f %.2f %.2f) yaw %.1f pitch %.1f | zN %.2f zF %.1f | %dx%d | %s",
+                    smoothedFps,
+                    p.x, p.y, p.z,
+                    freeCamera->yawDeg(), freeCamera->pitchDeg(),
+                    freeCamera->zNear(), freeCamera->zFar(),
+                    window.width(), window.height(),
+                    swapChain->presentModeName().c_str());
+
+                window.setTitle(titleBuf);
+            }
+
             maybeRecreateSwapchain();
             if (window.width() == 0 || window.height() == 0) // minimized
                 continue;
@@ -323,16 +339,21 @@ namespace Vk
 
     void VulkanRenderer::cleanup()
     {
+        // 1) Wait for device idle before destroing GPU resources.
         if (logicalDevice)
         {
             VK_CHECK(vkDeviceWaitIdle(logicalDevice->getDevice()));
         }
 
+        // 2) Stop the frame thread / renderer driver (it may submit).
         frameRenderer.reset();
 
-        sceneMaterials.clear();
+        // 3) Destroy scene and materials early - they own Mesh/Textures/VkBuffer/VkImage etc.
+        // This ensures Mesh destructors free their Vulkan handles while device is valid.
+        scene.reset();
         materials.reset();
 
+        // 4) Destroy context-held resources (per-image UBO's, descriptor pools/sets).
         if (ctx)
         {
             // owns per-image UBOs/descriptor sets
@@ -340,16 +361,24 @@ namespace Vk
             ctx.reset();
         }
 
-        commandBuffers.reset();
-        gpuMeshes.clear(); // destroy VBO/IBO via Mesh destructors
+        // 5) Command buffers, frame buffers, image views, pipelines, renderpass, depth, sync
+        commandBuffers.reset(); // frees primary command buffers
         framebuffers.reset();
         imageViews.reset();
         graphicsPipeline.reset();
         renderPass.reset();
-        syncObjects.reset();
         depth.reset();
+
+        // 6) Sync objects, command pool, swapchain
+        syncObjects.reset();
         commandPool.reset();
-        swapChain.reset();
+        if (swapChain)
+        {
+            swapChain->cleanup(); // explicity cleanup swapchain internals
+            swapChain.reset();
+        }
+
+        // 7) Destroy logical device last (after all children freed)
         logicalDevice.reset();
         physicalDevice.reset();
         surface.reset();
@@ -389,7 +418,7 @@ namespace Vk
         swapChain->cleanup();
         swapChain->create();
 
-        orbitCamera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
+        freeCamera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
 
         depth = std::make_unique<DepthResources>();
         depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
@@ -420,22 +449,30 @@ namespace Vk
         // 5) Recreate renderer context (pipeline/layout might have changed)
         ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
                                                 *syncObjects, *renderPass, *graphicsPipeline);
-        ctx->drawList = drawList;
+        {
+            ctx->drawList.clear();
+            ctx->drawList.reserve(scene->drawItems().size());
+            for (auto &di : scene->drawItems())
+            {
+                ctx->drawList.push_back(di.mesh); // di.mesh is Mesh*
+            }
+        }
         ctx->createViewResources(physicalDevice->getDevice());
 
         // 6) Record new command buffers (and refresh UBOs)
+        const auto &drawItemsRef = scene->drawItems();
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
             Render::ViewUniforms u{};
-            u.view = orbitCamera->view();
-            u.proj = orbitCamera->proj();
+            u.view = freeCamera->view();
+            u.proj = freeCamera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = glm::vec4(orbitCamera->position(), 1.0f);
+            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f);
 
             ctx->updateViewUbo(i, u);
 
             commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, drawItems, ctx->viewSet(i));
+                                   *swapChain, drawItemsRef, ctx->viewSet(i));
         }
 
         // 7) Recreate driver
