@@ -1,111 +1,77 @@
 #pragma once
 
-#include <glm/mat4x4.hpp>
+#include "Camera.h"
 #include <glm/vec3.hpp>
-#include <glm/common.hpp> // glm::clamp, glm::max
-
-#include "render/Camera.h"
+#include <glm/mat4x4.hpp>
 
 namespace Render
 {
 
     /**
-     * @brief Simple orbit (turntable) camera.
-     *
-     * Parameters:
-     *  - target:     point to orbit around (world-space)
-     *  - distance:   distance from target along forward axis
-     *  - azimuthDeg: yaw around +Y in degrees
-     *  - elevationDeg: pitch in degrees (clamped to avoid gimbal flip)
-     *  - rollDeg:    roll in degrees (rotation around forward)
-     *
-     * Projection:
-     *  - Perspective with vertical fov in degrees, aspect (width/height), near/far planes.
-     *
-     * Notes:
-     *  - Matrices are cached and recomputed only when marked dirty.
-     *  - Vulkan NDC (Y-flip) is applied in proj().
+     * @brief Camera that orbits around a target point at a radius.
+     * - Controlled via azimuth (yaw) and elevation (pitch) angles.
+     * - Useful for inspecting a model/object.
+     * - Exposes same Camera interface so it can be used polymorphically.
      */
-    class OrbitCamera final : public Camera
+
+    class OrbitCamera : public Camera
     {
     public:
-        // ---- Parameter setters ----
-        void setTarget(const glm::vec3 &t) noexcept
-        {
-            target = t;
-            dirtyView = true;
-        }
+        OrbitCamera() noexcept;
 
-        void setDistance(float d) noexcept
-        {
-            distance = glm::max(d, 0.001f);
-            dirtyView = true;
-        }
+        // Matrix accessors
+        const glm::mat4 &view() const noexcept override;
+        const glm::mat4 &proj() const noexcept override;
 
-        void setAzimuth(float deg) noexcept
-        {
-            azimuthDeg = deg;
-            dirtyView = true;
-        }
-
-        void setElevation(float deg) noexcept
-        {
-            // Prevent looking exactly up/down to avoid unstable basis
-            elevationDeg = glm::clamp(deg, -89.9f, 89.9f);
-            dirtyView = true;
-        }
-
-        void setRoll(float deg) noexcept
-        {
-            rollDeg = deg;
-            dirtyView = true;
-        }
-
-        // ---- Camera interface ----
-        [[nodiscard]] const glm::mat4 &view() const noexcept override;
-        [[nodiscard]] const glm::mat4 &proj() const noexcept override;
-
+        // Projection control
         void setPerspective(float fovDeg, float aspect, float znear, float zfar) noexcept override;
         void setAspect(float aspect) noexcept override;
 
-        [[nodiscard]] glm::vec3 position() const noexcept override;
+        // World state
+        glm::vec3 position() const noexcept override; // computed from target + spherical coords
 
-        /**
-         * @brief Frame the camera to fully fit an AABB.
-         * @param worldMin/worldMax  AABB in world space.
-         * @param fovY_deg           Vertical FOV (degrees) to use.
-         * @param aspect             Aspect ratio (width/height).
-         * @param pad                Safety multiplier (>1) to avoid tight fit.
-         * @param targetLift         Raise target by this fraction of AABB height.
-         *
-         * Keeps current azimuth/elevation/roll; adjusts target, perspective and distance.
-         */
-        void frameToBox(const glm::vec3 &worldMin,
-                        const glm::vec3 &worldMax,
-                        float fovY_deg,
-                        float aspect,
-                        float pad = 1.05f,
-                        float targetLift = 0.06f) noexcept;
+        // Generic control
+        // MoveLocal is not meaningful for orbit camera (no-op).
+        void moveLocal(const glm::vec3 & /*deltaLocal*/) noexcept override {}
+
+        // Rotate by yaw (azimuth) and pitch (elevation)
+        void addYawPitch(float deltaYawDeg, float deltaPitchDeg) noexcept override;
+
+        // Set target/eye via lookAt
+        void lookAt(const glm::vec3 &eye, const glm::vec3 &target, const glm::vec3 &up = glm::vec3(0.0f, 1.0f, 0.0f)) noexcept override;
+
+        // Specific helpers for orbit camera
+        void setTarget(const glm::vec3 &target) noexcept;
+        void setRadius(float radius) noexcept;
+        void setAngles(float azimuthDeg, float elevationDeg) noexcept;
+
+        float yawDeg() const noexcept override { return azimuthDeg_; }
+        float pitchDeg() const noexcept override { return elevationDeg_; }
+        float zNear() const noexcept override { return znear_; }
+        float zFar() const noexcept override { return zfar_; }
 
     private:
-        // Orbit parameters
-        glm::vec3 target{0.0f};
-        float distance{5.0f};
-        float azimuthDeg{225.0f};
-        float elevationDeg{-20.0f};
-        float rollDeg{-2.5f};
+        glm::vec3 target_;
+        float radius_;       // distance from target
+        float azimuthDeg_;   // horizontal angle (degrees)
+        float elevationDeg_; // vertical angle (degrees), clamped
 
-        // Projection parameters
-        float fovDeg{45.0f};        // vertical FOV, degrees
-        float aspect{16.0f / 9.0f}; // width/height
-        float nearZ{0.01f};
-        float farZ{2000.0f};
+        // proj params
+        float fovDeg_;
+        float aspect_;
+        float znear_;
+        float zfar_;
 
-        // Cached matrices
-        mutable bool dirtyView{true};
-        mutable bool dirtyProj{true};
-        mutable glm::mat4 cachedView{1.0f};
-        mutable glm::mat4 cachedProj{1.0f};
+        // cached matrices + dirty flags
+        mutable glm::mat4 viewMat_;
+        mutable glm::mat4 projMat_;
+        mutable bool viewDirty_;
+        mutable bool projDirty_;
+
+        void recomputeView() const noexcept;
+        void recomputeProj() const noexcept;
+
+        static constexpr float kElevationMin = -89.0f;
+        static constexpr float kElevationMax = 89.0f;
     };
-
 } // namespace Render

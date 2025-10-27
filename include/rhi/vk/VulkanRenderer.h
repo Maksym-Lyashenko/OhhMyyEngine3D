@@ -8,10 +8,17 @@
 
 namespace Render
 {
+    class Camera;
     class OrbitCamera;
     class FreeCamera;
+    class CameraController;
     class Scene;
     class MaterialSystem;
+}
+
+namespace Input
+{
+    class InputSystem;
 }
 
 namespace Vk
@@ -107,6 +114,11 @@ namespace Vk
         // ---- Camera ----
         std::unique_ptr<Render::OrbitCamera> orbitCamera; // Simple orbit camera for first view
         std::unique_ptr<Render::FreeCamera> freeCamera;
+        Render::Camera *camera = nullptr;
+
+        // --- Input and Controller ---
+        std::unique_ptr<Input::InputSystem> inputSystem;
+        std::unique_ptr<Render::CameraController> cameraController;
 
         // ---- State flags ----
         bool framebufferResized = false; // Legacy flag (can be driven by GLFW callback)

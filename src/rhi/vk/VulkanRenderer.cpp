@@ -24,10 +24,13 @@
 
 #include "render/OrbitCamera.h"
 #include "render/FreeCamera.h"
+#include "render/CameraController.h"
 #include "render/Scene.h"
 #include "render/ViewUniforms.h"
 #include "render/materials/Material.h"
 #include "render/materials/MaterialSystem.h"
+
+#include "input/InputSystem.h"
 
 #include "asset/io/GltfLoader.h"
 #include "asset/processing/MeshOptimize.h"
@@ -180,7 +183,7 @@ namespace Vk
                 eye,
                 /*yawDeg   */ 0.0f,
                 /*pitchDeg */ 0.0f,
-                /*fovYDeg  */ 32.0f,
+                /*fovYDeg  */ 60.0f,
                 /*aspect   */ swapChain->getExtent().width /
                     float(swapChain->getExtent().height),
                 /*near*/ 0.05f,
@@ -206,14 +209,30 @@ namespace Vk
         if (!orbitCamera)
         {
             orbitCamera = std::make_unique<Render::OrbitCamera>();
+            orbitCamera->lookAt(eye, center);
         }
-        orbitCamera->setAzimuth(225.0f);
-        orbitCamera->setElevation(-20.0f);
-        orbitCamera->setRoll(-2.5f);
 
-        const float aspect = swapChain->getExtent().width / float(swapChain->getExtent().height);
-        orbitCamera->frameToBox(box.min, box.max, /*fovY_deg=*/32.0f, aspect,
-                                /*pad=*/1.05f, /*lift=*/0.06f);
+        if (orbitCamera)
+        {
+            orbitCamera->setAspect(
+                swapChain->getExtent().width /
+                float(swapChain->getExtent().height));
+        }
+
+        camera = freeCamera.get();
+
+        // --- Input System and Camera Controller setup ---------------------------
+        inputSystem = std::make_unique<Input::InputSystem>(window);
+        cameraController = std::make_unique<Render::CameraController>(*camera, *inputSystem);
+
+        // optionally configure:
+        inputSystem->setMouseSensitivity(0.12f);
+        inputSystem->setInvertX(false);
+        inputSystem->setInvertY(false);         // you probably want Y inverted for natural mouse look
+        cameraController->setBaseSpeed(100.0f); // tune to taste
+        cameraController->setBoostMultiplier(4.0f);
+        cameraController->setSlowMultiplier(0.2f);
+        cameraController->setInvertForward(true);
 
         // --- Record command buffers ----------------------------------------------
         // drawItems we now get from Scene
@@ -223,10 +242,10 @@ namespace Vk
         {
             // Update per-image View UBO
             Render::ViewUniforms u{};
-            u.view = freeCamera->view();
-            u.proj = freeCamera->proj();
+            u.view = camera->view();
+            u.proj = camera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f); // std140-friendly
+            u.cameraPos = glm::vec4(camera->position(), 1.0f); // std140-friendly
 
             ctx->updateViewUbo(i, u);
 
@@ -270,41 +289,22 @@ namespace Vk
 
             window.pollEvents();
 
+            inputSystem->poll();
+
             if (window.wasKeyPressed(GLFW_KEY_F1))
             {
-                // переключатель захвата мыши
                 static bool cap = false;
                 cap = !cap;
-                window.captureMouse(cap);
+                inputSystem->captureMouse(cap);
             }
 
-            if (window.isMouseDown(GLFW_MOUSE_BUTTON_RIGHT))
-            {
-                glm::vec2 md = window.mouseDelta();
-                freeCamera->addYawPitch(md.x * 0.1f, -md.y * 0.1f);
-            }
-
-            glm::vec3 v(0);
-            const float spd = 100.0f;
-            if (window.isKeyDown(GLFW_KEY_W))
-                v.z += spd * dt;
-            if (window.isKeyDown(GLFW_KEY_S))
-                v.z -= spd * dt;
-            if (window.isKeyDown(GLFW_KEY_A))
-                v.x -= spd * dt;
-            if (window.isKeyDown(GLFW_KEY_D))
-                v.x += spd * dt;
-            if (window.isKeyDown(GLFW_KEY_E))
-                v.y += spd * dt;
-            if (window.isKeyDown(GLFW_KEY_Q))
-                v.y -= spd * dt;
-            freeCamera->moveLocal(v);
+            cameraController->update(dt);
 
             Render::ViewUniforms u{};
-            u.view = freeCamera->view();
-            u.proj = freeCamera->proj();
+            u.view = camera->view();
+            u.proj = camera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f);
+            u.cameraPos = glm::vec4(camera->position(), 1.0f);
 
             for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
             {
@@ -313,7 +313,7 @@ namespace Vk
 
             // --- DEBUG HEADER --- //
             {
-                glm::vec3 p = freeCamera->position();
+                glm::vec3 p = camera->position();
 
                 char titleBuf[512];
                 std::snprintf(
@@ -322,8 +322,8 @@ namespace Vk
                     "FPS %.1f | Cam (%.2f %.2f %.2f) yaw %.1f pitch %.1f | zN %.2f zF %.1f | %dx%d | %s",
                     smoothedFps,
                     p.x, p.y, p.z,
-                    freeCamera->yawDeg(), freeCamera->pitchDeg(),
-                    freeCamera->zNear(), freeCamera->zFar(),
+                    camera->yawDeg(), camera->pitchDeg(),
+                    camera->zNear(), camera->zFar(),
                     window.width(), window.height(),
                     swapChain->presentModeName().c_str());
 
@@ -418,7 +418,7 @@ namespace Vk
         swapChain->cleanup();
         swapChain->create();
 
-        freeCamera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
+        camera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
 
         depth = std::make_unique<DepthResources>();
         depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
@@ -464,10 +464,10 @@ namespace Vk
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
             Render::ViewUniforms u{};
-            u.view = freeCamera->view();
-            u.proj = freeCamera->proj();
+            u.view = camera->view();
+            u.proj = camera->proj();
             u.viewProj = u.proj * u.view;
-            u.cameraPos = glm::vec4(freeCamera->position(), 1.0f);
+            u.cameraPos = glm::vec4(camera->position(), 1.0f);
 
             ctx->updateViewUbo(i, u);
 

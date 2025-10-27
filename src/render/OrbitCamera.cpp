@@ -1,117 +1,140 @@
+// OrbitCamera.cpp
 #include "render/OrbitCamera.h"
-
-#include <glm/gtc/matrix_transform.hpp> // lookAt, perspective, radians
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/constants.hpp>
-#include <cmath> // sin, cos, tan
+#include <algorithm>
 
 namespace Render
 {
 
-    // Rodrigues' rotation formula: rotate vector v around unit axis a by angle (radians)
-    static inline glm::vec3 rotateAroundAxis(const glm::vec3 &v, float angle, const glm::vec3 &a) noexcept
+    OrbitCamera::OrbitCamera() noexcept
+        : target_(0.0f),
+          radius_(3.0f),
+          azimuthDeg_(0.0f),
+          elevationDeg_(0.0f),
+          fovDeg_(60.0f),
+          aspect_(16.0f / 9.0f),
+          znear_(0.01f),
+          zfar_(1000.0f),
+          viewMat_(1.0f),
+          projMat_(1.0f),
+          viewDirty_(true),
+          projDirty_(true)
     {
-        const float c = std::cos(angle);
-        const float s = std::sin(angle);
-        return v * c + glm::cross(a, v) * s + a * (glm::dot(a, v) * (1.0f - c));
-    }
-
-    // Build forward & up vectors from azimuth/elevation/roll (degrees)
-    static inline void azelForwardUp(float azimuthDeg, float elevationDeg, float rollDeg,
-                                     glm::vec3 &forward, glm::vec3 &up) noexcept
-    {
-        const float az = glm::radians(azimuthDeg);
-        const float el = glm::radians(elevationDeg);
-        const float rl = glm::radians(rollDeg);
-
-        const float cosEl = std::cos(el);
-        forward = glm::normalize(glm::vec3(
-            std::sin(az) * cosEl, // x
-            std::sin(el),         // y
-            std::cos(az) * cosEl  // z
-            ));
-
-        // Start from global +Y, orthonormalize against forward, then apply roll about forward
-        const glm::vec3 up0(0.0f, 1.0f, 0.0f);
-        const glm::vec3 right = glm::normalize(glm::cross(forward, up0));
-        up = glm::normalize(glm::cross(right, forward));
-        up = rotateAroundAxis(up, rl, forward);
     }
 
     const glm::mat4 &OrbitCamera::view() const noexcept
     {
-        if (dirtyView)
-        {
-            glm::vec3 f, u;
-            azelForwardUp(azimuthDeg, elevationDeg, rollDeg, f, u);
-            const glm::vec3 camPos = target - f * distance;
-            cachedView = glm::lookAt(camPos, target, u);
-            dirtyView = false;
-        }
-        return cachedView;
+        if (viewDirty_)
+            recomputeView();
+        return viewMat_;
     }
 
     const glm::mat4 &OrbitCamera::proj() const noexcept
     {
-        if (dirtyProj)
-        {
-            cachedProj = glm::perspective(glm::radians(fovDeg), aspect, nearZ, farZ);
-            // Vulkan NDC has Y down compared to GL; flip projection Y
-            cachedProj[1][1] *= -1.0f;
-            dirtyProj = false;
-        }
-        return cachedProj;
+        if (projDirty_)
+            recomputeProj();
+        return projMat_;
     }
 
-    void OrbitCamera::setPerspective(float fovDeg_, float aspect_, float znear_, float zfar_) noexcept
+    void OrbitCamera::setPerspective(float fovDeg, float aspect, float znear, float zfar) noexcept
     {
-        fovDeg = fovDeg_;
-        aspect = aspect_;
-        nearZ = znear_;
-        farZ = zfar_;
-        dirtyProj = true;
+        fovDeg_ = fovDeg;
+        aspect_ = aspect;
+        znear_ = znear;
+        zfar_ = zfar;
+        projDirty_ = true;
     }
 
-    void OrbitCamera::setAspect(float aspect_) noexcept
+    void OrbitCamera::setAspect(float aspect) noexcept
     {
-        aspect = aspect_;
-        dirtyProj = true;
+        aspect_ = aspect;
+        projDirty_ = true;
     }
 
     glm::vec3 OrbitCamera::position() const noexcept
     {
-        glm::vec3 f, u;
-        azelForwardUp(azimuthDeg, elevationDeg, rollDeg, f, u);
-        return target - f * distance;
+        // compute from spherical coordinates
+        const float az = glm::radians(azimuthDeg_);
+        const float el = glm::radians(elevationDeg_);
+
+        glm::vec3 dir;
+        dir.x = std::cos(el) * std::sin(az);
+        dir.y = std::sin(el);
+        dir.z = std::cos(el) * std::cos(az);
+
+        return target_ + dir * radius_;
     }
 
-    void OrbitCamera::frameToBox(const glm::vec3 &worldMin,
-                                 const glm::vec3 &worldMax,
-                                 float fovY_deg,
-                                 float aspect_,
-                                 float pad,
-                                 float targetLift) noexcept
+    void OrbitCamera::addYawPitch(float deltaYawDeg, float deltaPitchDeg) noexcept
     {
-        const glm::vec3 C = 0.5f * (worldMin + worldMax);
-        const glm::vec3 size = worldMax - worldMin;
+        azimuthDeg_ -= deltaYawDeg;
+        elevationDeg_ -= deltaPitchDeg;
+        elevationDeg_ = std::clamp(elevationDeg_, kElevationMin, kElevationMax);
+        viewDirty_ = true;
+    }
 
-        // Half-extent in XZ footprint and Y height
-        const float halfW = 0.5f * glm::max(size.x, size.z);
-        const float halfH = 0.5f * size.y;
+    void OrbitCamera::lookAt(const glm::vec3 &eye, const glm::vec3 &target, const glm::vec3 & /*up*/) noexcept
+    {
+        target_ = target;
+        // compute radius and angles from eye -> target
+        glm::vec3 v = eye - target_;
+        radius_ = glm::length(v);
+        if (radius_ <= 1e-6f)
+            radius_ = 0.0001f;
 
-        const float fovY = glm::radians(fovY_deg);
-        const float distY = halfH / std::tan(0.5f * fovY);
-        const float distX = (halfW / aspect_) / std::tan(0.5f * fovY);
-        const float dist = pad * glm::max(distX, distY);
+        // derive angles:
+        // elevation = asin(y / r)
+        elevationDeg_ = glm::degrees(std::asin(glm::clamp(v.y / radius_, -1.0f, 1.0f)));
+        // azimuth: atan2(x, z) measured the same way as in FreeCamera
+        azimuthDeg_ = glm::degrees(std::atan2(v.x, v.z));
+        viewDirty_ = true;
+    }
 
-        // Lift target by a fraction of the box height (looks better)
-        const glm::vec3 lift(0.0f, targetLift * size.y, 0.0f);
-        setTarget(C + lift);
+    void OrbitCamera::setTarget(const glm::vec3 &target) noexcept
+    {
+        target_ = target;
+        viewDirty_ = true;
+    }
 
-        // Apply FOV/ASPECT to projection; keep current near/far
-        setPerspective(fovY_deg, aspect_, nearZ, farZ);
+    void OrbitCamera::setRadius(float radius) noexcept
+    {
+        radius_ = std::max(radius, 1e-6f);
+        viewDirty_ = true;
+    }
 
-        // Distance along current forward
-        setDistance(dist);
+    void OrbitCamera::setAngles(float azimuthDeg, float elevationDeg) noexcept
+    {
+        azimuthDeg_ = azimuthDeg;
+        elevationDeg_ = std::clamp(elevationDeg, kElevationMin, kElevationMax);
+        viewDirty_ = true;
+    }
+
+    void OrbitCamera::recomputeView() const noexcept
+    {
+        // compute camera position from spherical coords (note: azimuth/elevation conventions match FreeCamera)
+        const float az = glm::radians(azimuthDeg_);
+        const float el = glm::radians(elevationDeg_);
+
+        glm::vec3 dir;
+        dir.x = std::cos(el) * std::sin(az);
+        dir.y = std::sin(el);
+        dir.z = std::cos(el) * std::cos(az);
+
+        glm::vec3 eye = target_ + dir * radius_;
+        const glm::vec3 up(0.0f, 1.0f, 0.0f);
+        viewMat_ = glm::lookAt(eye, target_, up);
+        viewDirty_ = false;
+    }
+
+    void OrbitCamera::recomputeProj() const noexcept
+    {
+        projMat_ = glm::perspective(glm::radians(fovDeg_), aspect_, znear_, zfar_);
+
+        // Vulkan clip space has inverted Y compared to OpenGL
+        projMat_[1][1] *= -1.0f;
+
+        projDirty_ = false;
     }
 
 } // namespace Render
