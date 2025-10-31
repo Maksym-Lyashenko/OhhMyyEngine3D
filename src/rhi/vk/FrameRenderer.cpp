@@ -66,8 +66,13 @@ namespace Vk
         // Reset the fence for the current frame before submitting new work to the queue.
         VK_CHECK(vkResetFences(device.getDevice(), 1, &inFlightFence));
 
+        commandBuffers.recordImGuiForImage(imageIndex,
+                                           swapChain, ctx.imageViews, ctx.depth, *ctx.imguiLayer);
+
         // 3) Submit the recorded command buffer for this image
-        const VkCommandBuffer cmd = commandBuffers[imageIndex];
+        const VkCommandBuffer submitCmds[2] = {
+            commandBuffers.sceneCommand(imageIndex),
+            commandBuffers.uiCommand(imageIndex)};
 
         const std::array<VkSemaphore, 1> waitSemaphores{syncObjects.getImageAvailableSemaphore(currentFrame)};
         const std::array<VkPipelineStageFlags, 1> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -77,8 +82,8 @@ namespace Vk
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
         submitInfo.pWaitDstStageMask = waitStages.data();
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &cmd;
+        submitInfo.commandBufferCount = 2;
+        submitInfo.pCommandBuffers = submitCmds;
         submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
         submitInfo.pSignalSemaphores = signalSemaphores.data();
 

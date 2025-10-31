@@ -1,18 +1,20 @@
 #include "rhi/vk/gfx/Mesh.h"
-#include "rhi/vk/vk_utils.h" // VK_CHECK, if you rely on it elsewhere
+#include "rhi/vk/Common.h" // VK_CHECK (if you use it elsewhere)
 
 #include <algorithm>
 #include <limits>
 
 namespace Vk::Gfx
 {
-
-    void Mesh::create(VkPhysicalDevice phys, VkDevice dev,
+    void Mesh::create(VmaAllocator allocator,
+                      VkDevice device,
+                      VkCommandPool cmdPool,
+                      VkQueue queue,
                       const std::vector<Vertex> &vertices,
                       const std::vector<uint32_t> &indices,
                       const glm::mat4 &local)
     {
-        // Validate indices
+        // Validate indices against vertex count
         const uint32_t vtxCount = static_cast<uint32_t>(vertices.size());
         for (size_t i = 0; i < indices.size(); ++i)
         {
@@ -24,13 +26,13 @@ namespace Vk::Gfx
             }
         }
 
-        // Reset previous resources if any
+        // Reset previous GPU resources
         destroy();
 
         // Store transform
         localTransform_ = local;
 
-        // Compute CPU-side AABB (if we have vertices)
+        // Compute CPU-side AABB
         if (!vertices.empty())
         {
             aabbMin_ = glm::vec3(vertices[0].pos[0], vertices[0].pos[1], vertices[0].pos[2]);
@@ -50,26 +52,37 @@ namespace Vk::Gfx
 
         indexCount_ = static_cast<uint32_t>(indices.size());
 
-        // Create & upload VBO
+        // Create & upload VBO (DEVICE_LOCAL via transient staging)
         const VkDeviceSize vboBytes = static_cast<VkDeviceSize>(sizeof(Vertex) * vertices.size());
-        vbo_.create(phys, dev,
-                    vboBytes,
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (vboBytes > 0)
         {
-            vbo_.upload(vertices.data(), static_cast<size_t>(vboBytes));
+            vbo_.createDeviceLocalWithData(
+                allocator, device, cmdPool, queue,
+                vertices.data(), vboBytes,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        }
+        else
+        {
+            // Create an empty buffer so bind() is harmless (optional)
+            vbo_.create(allocator, device, 0,
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VMA_MEMORY_USAGE_GPU_ONLY);
         }
 
-        // Create & upload IBO
+        // Create & upload IBO (DEVICE_LOCAL via transient staging)
         const VkDeviceSize iboBytes = static_cast<VkDeviceSize>(sizeof(uint32_t) * indices.size());
-        ibo_.create(phys, dev,
-                    iboBytes,
-                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (iboBytes > 0)
         {
-            ibo_.upload(indices.data(), static_cast<size_t>(iboBytes));
+            ibo_.createDeviceLocalWithData(
+                allocator, device, cmdPool, queue,
+                indices.data(), iboBytes,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        }
+        else
+        {
+            ibo_.create(allocator, device, 0,
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VMA_MEMORY_USAGE_GPU_ONLY);
         }
     }
 

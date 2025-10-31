@@ -1,45 +1,29 @@
 #include "rhi/vk/DepthResources.h"
 
-#include "rhi/vk/vk_utils.h" // FindSupportedDepthFormat
+#include "rhi/vk/vk_utils.h" // FindSupportedDepthFormat(phys)
 #include "rhi/vk/Common.h"   // VK_CHECK
+
 #include <stdexcept>
-#include <cstring>
-
-namespace
-{
-
-    // Local helper: find a memory type index for the requested properties.
-    uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryPropertyFlags props)
-    {
-        VkPhysicalDeviceMemoryProperties memProps{};
-        vkGetPhysicalDeviceMemoryProperties(phys, &memProps);
-        for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-        {
-            const bool typeOk = (typeBits & (1u << i)) != 0;
-            const bool propsOk = (memProps.memoryTypes[i].propertyFlags & props) == props;
-            if (typeOk && propsOk)
-                return i;
-        }
-        throw std::runtime_error("DepthResources: no suitable memory type");
-    }
-
-} // namespace
 
 namespace Vk
 {
-
     void DepthResources::create(VkPhysicalDevice physicalDevice,
                                 VkDevice inDevice,
+                                VmaAllocator inAllocator,
                                 VkExtent2D extent,
                                 VkCommandPool commandPool,
                                 VkQueue graphicsQueue,
                                 VkSampleCountFlagBits samples)
     {
+        // Save context
         device_ = inDevice;
+        allocator_ = inAllocator;
         samples_ = samples;
-        format_ = FindSupportedDepthFormat(physicalDevice); // chooses best available depth format
 
-        // 1) Create image
+        // Pick a supported depth format (D32 preferred, fallbacks w/ stencil if needed)
+        format_ = FindSupportedDepthFormat(physicalDevice);
+
+        // 1) Create depth image via VMA (GPU-only)
         VkImageCreateInfo img{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         img.imageType = VK_IMAGE_TYPE_2D;
         img.extent = {extent.width, extent.height, 1u};
@@ -52,21 +36,12 @@ namespace Vk
         img.samples = samples_;
         img.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        VK_CHECK(vkCreateImage(device_, &img, nullptr, &image_));
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-        // 2) Allocate & bind memory
-        VkMemoryRequirements memReq{};
-        vkGetImageMemoryRequirements(device_, image_, &memReq);
+        VK_CHECK(vmaCreateImage(allocator_, &img, &aci, &image_, &allocation_, nullptr));
 
-        VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        alloc.allocationSize = memReq.size;
-        alloc.memoryTypeIndex = findMemoryType(physicalDevice, memReq.memoryTypeBits,
-                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        VK_CHECK(vkAllocateMemory(device_, &alloc, nullptr, &memory_));
-        VK_CHECK(vkBindImageMemory(device_, image_, memory_, 0));
-
-        // 3) Create image view
+        // 2) Create image view
         VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
         if (hasStencil(format_))
             aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -83,13 +58,13 @@ namespace Vk
 
         VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view_));
 
-        // 4) Transition to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        // 3) Transition to DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         transitionToAttachment(commandPool, graphicsQueue);
     }
 
     void DepthResources::transitionToAttachment(VkCommandPool commandPool, VkQueue queue)
     {
-        // One-time command buffer
+        // Allocate a one-time command buffer
         VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         alloc.commandPool = commandPool;
@@ -102,7 +77,7 @@ namespace Vk
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
 
-        // Use synchronization2 barrier to set the optimal layout for depth attachment
+        // Synchronization2 barrier: UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
@@ -130,7 +105,7 @@ namespace Vk
         vkCmdPipelineBarrier2(cmd, &dep);
         VK_CHECK(vkEndCommandBuffer(cmd));
 
-        // Submit and wait (simple path; you could use vkQueueSubmit2 if preferred)
+        // Submit and wait (simple path)
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd;
@@ -153,16 +128,14 @@ namespace Vk
         }
         if (image_)
         {
-            vkDestroyImage(device_, image_, nullptr);
+            // Release VkImage and its allocation together
+            vmaDestroyImage(allocator_, image_, allocation_);
             image_ = VK_NULL_HANDLE;
-        }
-        if (memory_)
-        {
-            vkFreeMemory(device_, memory_, nullptr);
-            memory_ = VK_NULL_HANDLE;
+            allocation_ = VK_NULL_HANDLE;
         }
 
         device_ = VK_NULL_HANDLE;
+        allocator_ = VK_NULL_HANDLE;
         format_ = VK_FORMAT_D32_SFLOAT;
         samples_ = VK_SAMPLE_COUNT_1_BIT;
     }

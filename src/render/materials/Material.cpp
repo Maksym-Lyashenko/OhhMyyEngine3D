@@ -7,50 +7,33 @@
 
 namespace Render
 {
-    // --- utility -------------------------------------------------------------
 
-    uint32_t Material::findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryPropertyFlags props)
-    {
-        VkPhysicalDeviceMemoryProperties mp{};
-        vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-        for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-            if ((typeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
-                return i;
-        throw std::runtime_error("Material: no suitable memory type for UBO");
-    }
-
-    void Material::createUbo(VkPhysicalDevice phys)
+    void Material::createUbo()
     {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.size = sizeof(MaterialParams);
         bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        VK_CHECK(vkCreateBuffer(device_, &bi, nullptr, &ubo_));
+        VmaAllocationCreateInfo aci{};
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
 
-        VkMemoryRequirements req{};
-        vkGetBufferMemoryRequirements(device_, ubo_, &req);
-
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        ai.allocationSize = req.size;
-        ai.memoryTypeIndex = findMemoryType(phys, req.memoryTypeBits,
-                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        VK_CHECK(vkAllocateMemory(device_, &ai, nullptr, &uboMem_));
-        VK_CHECK(vkBindBufferMemory(device_, ubo_, uboMem_, 0));
+        VmaAllocationInfo info{};
+        VK_CHECK(vmaCreateBuffer(allocator_, &bi, &aci, &ubo_, &uboAlloc_, &info));
     }
 
     void Material::updateUbo(const MaterialParams &p)
     {
         void *mapped = nullptr;
-        VK_CHECK(vkMapMemory(device_, uboMem_, 0, sizeof(MaterialParams), 0, &mapped));
+        VK_CHECK(vmaMapMemory(allocator_, uboAlloc_, &mapped));
         std::memcpy(mapped, &p, sizeof(MaterialParams));
-        vkUnmapMemory(device_, uboMem_);
+        vmaUnmapMemory(allocator_, uboAlloc_);
     }
 
     // --- main ---------------------------------------------------------------
 
-    void Material::create(VkPhysicalDevice phys, VkDevice dev,
+    void Material::create(VmaAllocator allocator, VkDevice dev,
                           VkDescriptorPool pool, VkDescriptorSetLayout layout,
                           VkCommandPool uploadPool,
                           VkQueue uploadQueue,
@@ -62,7 +45,7 @@ namespace Render
     {
         destroy();
 
-        phys_ = phys;
+        allocator_ = allocator;
         device_ = dev;
 
         // Load textures if paths are provided, otherwise use fallbacks.
@@ -73,7 +56,7 @@ namespace Render
             if (path.empty())
                 return false;
             dst = std::make_unique<Vk::Gfx::Texture2D>();
-            dst->loadFromFile(phys_, device_, /*cmdPool*/ uploadPool, /*queue*/ uploadQueue,
+            dst->loadFromFile(allocator_, device_, /*cmdPool*/ uploadPool, /*queue*/ uploadQueue,
                               path, /*genMips*/ true, fmt); // NOTE: if you need cmdPool/queue, pass via MaterialSystem
             return true;
         };
@@ -102,7 +85,7 @@ namespace Render
         if (!desc.baseColorPath.empty())
         {
             baseColor_ = std::make_unique<Vk::Gfx::Texture2D>();
-            baseColor_->loadFromFile(phys_, device_,
+            baseColor_->loadFromFile(allocator_, device_,
                                      /*cmdPool*/ uploadPool, /*queue*/ uploadQueue,
                                      desc.baseColorPath, /*genMips*/ true, VK_FORMAT_R8G8B8A8_SRGB);
             albedoView_ = baseColor_->view();
@@ -114,7 +97,7 @@ namespace Render
         if (!desc.normalPath.empty())
         {
             normal_ = std::make_unique<Vk::Gfx::Texture2D>();
-            normal_->loadFromFile(phys_, device_, uploadPool, uploadQueue,
+            normal_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
                                   desc.normalPath, true, VK_FORMAT_R8G8B8A8_UNORM);
             normalView_ = normal_->view();
             normalSampler_ = normal_->sampler();
@@ -125,7 +108,7 @@ namespace Render
         if (!desc.mrPath.empty())
         {
             mr_ = std::make_unique<Vk::Gfx::Texture2D>();
-            mr_->loadFromFile(phys_, device_, uploadPool, uploadQueue,
+            mr_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
                               desc.mrPath, true, VK_FORMAT_R8G8B8A8_UNORM);
             mrView_ = mr_->view();
             mrSampler_ = mr_->sampler();
@@ -136,7 +119,7 @@ namespace Render
         if (!desc.occlusionPath.empty())
         {
             occlusion_ = std::make_unique<Vk::Gfx::Texture2D>();
-            occlusion_->loadFromFile(phys_, device_, uploadPool, uploadQueue,
+            occlusion_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
                                      desc.occlusionPath, true, VK_FORMAT_R8G8B8A8_UNORM);
             aoView_ = occlusion_->view();
             aoSampler_ = occlusion_->sampler();
@@ -147,7 +130,7 @@ namespace Render
         if (!desc.emissivePath.empty())
         {
             emissive_ = std::make_unique<Vk::Gfx::Texture2D>();
-            emissive_->loadFromFile(phys_, device_, uploadPool, uploadQueue,
+            emissive_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
                                     desc.emissivePath, true, VK_FORMAT_R8G8B8A8_SRGB);
             emissiveView_ = emissive_->view();
             emissiveSampler_ = emissive_->sampler();
@@ -155,7 +138,7 @@ namespace Render
         }
 
         // UBO
-        createUbo(phys_);
+        createUbo();
         MaterialParams params = desc.params;
         params.flags = flags;
         updateUbo(params);
@@ -212,14 +195,9 @@ namespace Render
 
         if (ubo_)
         {
-            vkDestroyBuffer(device_, ubo_, nullptr);
+            vmaDestroyBuffer(allocator_, ubo_, uboAlloc_);
             ubo_ = VK_NULL_HANDLE;
-        }
-
-        if (uboMem_)
-        {
-            vkFreeMemory(device_, uboMem_, nullptr);
-            uboMem_ = VK_NULL_HANDLE;
+            uboAlloc_ = VK_NULL_HANDLE;
         }
 
         baseColor_.reset();
@@ -231,7 +209,7 @@ namespace Render
         set_ = VK_NULL_HANDLE; // belongs to pool, freed with pool destroy
 
         device_ = VK_NULL_HANDLE;
-        phys_ = VK_NULL_HANDLE;
+        allocator_ = VK_NULL_HANDLE;
     }
 
 } // namespace Render

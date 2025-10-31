@@ -21,12 +21,18 @@ namespace Input
     class InputSystem;
 }
 
+namespace UI
+{
+    class ImGuiLayer;
+}
+
 namespace Vk
 {
     class VulkanInstance;
     class Surface;
     class VulkanPhysicalDevice;
     class VulkanLogicalDevice;
+    class VulkanAllocator;
     class SwapChain;
     class ImageViews;
     class RenderPass;
@@ -90,6 +96,9 @@ namespace Vk
         std::unique_ptr<VulkanPhysicalDevice> physicalDevice; // Chosen GPU + queue families
         std::unique_ptr<VulkanLogicalDevice> logicalDevice;   // VkDevice + queues
 
+        // --- Memory Management ---
+        std::unique_ptr<VulkanAllocator> allocator;
+
         // ---- Swapchain domain ----
         std::unique_ptr<SwapChain> swapChain;       // Images + format + extent
         std::unique_ptr<ImageViews> imageViews;     // Per-image views
@@ -119,6 +128,9 @@ namespace Vk
         // --- Input and Controller ---
         std::unique_ptr<Input::InputSystem> inputSystem;
         std::unique_ptr<Render::CameraController> cameraController;
+
+        // --- ImGUI ---
+        std::unique_ptr<UI::ImGuiLayer> imguiLayer;
 
         // ---- State flags ----
         bool framebufferResized = false; // Legacy flag (can be driven by GLFW callback)

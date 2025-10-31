@@ -1,8 +1,13 @@
 #pragma once
+
 #include <vulkan/vulkan.h>
+
 #include <memory>
+
 #include "Material.h"
 #include "rhi/vk/gfx/Texture2D.h"
+
+#include <vk_mem_alloc.h>
 
 namespace Render
 {
@@ -19,7 +24,7 @@ namespace Render
         MaterialSystem() = default;
         ~MaterialSystem() { shutdown(); }
 
-        void init(VkPhysicalDevice phys, VkDevice dev,
+        void init(VmaAllocator allocator, VkDevice dev,
                   VkDescriptorSetLayout materialLayout,
                   uint32_t maxMaterials);
 
@@ -43,7 +48,7 @@ namespace Render
         void destroyFallbacks();
 
     private:
-        VkPhysicalDevice phys_{VK_NULL_HANDLE};
+        VmaAllocator allocator_{VK_NULL_HANDLE};
         VkDevice device_{VK_NULL_HANDLE};
 
         VkDescriptorPool pool_{VK_NULL_HANDLE};

@@ -1,21 +1,21 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 namespace Vk
 {
-
     /**
-     * @brief RAII wrapper for the depth attachment (image + memory + view).
+     * @brief RAII wrapper for a depth attachment (image + allocation + view).
      *
      * Responsibilities:
-     *  - Choose/remember a supported depth format (with/without stencil).
-     *  - Create VkImage/VkDeviceMemory/VkImageView for given extent and sample count.
-     *  - Transition image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
+     *  - Pick a supported depth format (with/without stencil).
+     *  - Create VkImage via VMA, keep VmaAllocation, and create VkImageView.
+     *  - Transition the image to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
      *
      * Notes:
-     *  - The image tiling is OPTIMAL; usage is DEPTH_STENCIL_ATTACHMENT_BIT.
-     *  - You can recreate() on resize/MSAA change; old resources are freed first.
+     *  - OPTIMAL tiling; usage includes DEPTH_STENCIL_ATTACHMENT_BIT.
+     *  - Call recreate() on resize/MSAA change; old resources are freed first.
      */
     class DepthResources final
     {
@@ -40,24 +40,26 @@ namespace Vk
         /// Create depth resources. Finds a supported depth format internally.
         void create(VkPhysicalDevice physicalDevice,
                     VkDevice device,
+                    VmaAllocator allocator,
                     VkExtent2D extent,
                     VkCommandPool commandPool,
                     VkQueue graphicsQueue,
                     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
-        /// Destroy all Vulkan objects (safe to call multiple times).
+        /// Destroy all Vulkan/VMA objects (safe to call multiple times).
         void destroy();
 
         /// Convenience recreate (destroy + create).
         void recreate(VkPhysicalDevice physicalDevice,
                       VkDevice device,
+                      VmaAllocator allocator,
                       VkExtent2D extent,
                       VkCommandPool commandPool,
                       VkQueue graphicsQueue,
                       VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT)
         {
             destroy();
-            create(physicalDevice, device, extent, commandPool, graphicsQueue, samples);
+            create(physicalDevice, device, allocator, extent, commandPool, graphicsQueue, samples);
         }
 
         VkFormat getFormat() const noexcept { return format_; }
@@ -65,10 +67,14 @@ namespace Vk
         VkImageView getView() const noexcept { return view_; }
 
     private:
+        // Owned handles
         VkDevice device_ = VK_NULL_HANDLE;
+        VmaAllocator allocator_ = VK_NULL_HANDLE;
         VkImage image_ = VK_NULL_HANDLE;
-        VkDeviceMemory memory_ = VK_NULL_HANDLE;
+        VmaAllocation allocation_ = VK_NULL_HANDLE;
         VkImageView view_ = VK_NULL_HANDLE;
+
+        // Metadata
         VkFormat format_ = VK_FORMAT_D32_SFLOAT;
         VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
 
@@ -85,10 +91,12 @@ namespace Vk
         {
             device_ = other.device_;
             other.device_ = VK_NULL_HANDLE;
+            allocator_ = other.allocator_;
+            other.allocator_ = VK_NULL_HANDLE;
             image_ = other.image_;
             other.image_ = VK_NULL_HANDLE;
-            memory_ = other.memory_;
-            other.memory_ = VK_NULL_HANDLE;
+            allocation_ = other.allocation_;
+            other.allocation_ = VK_NULL_HANDLE;
             view_ = other.view_;
             other.view_ = VK_NULL_HANDLE;
             format_ = other.format_;

@@ -1,11 +1,16 @@
 #pragma once
 
+#include "VulkanInstance.h"
+#include "VulkanPhysicalDevice.h"
 #include "VulkanLogicalDevice.h"
 #include "SwapChain.h"
 #include "CommandBuffers.h"
+#include "CommandPool.h"
 #include "SyncObjects.h"
 #include "RenderPass.h"
 #include "GraphicsPipeline.h"
+#include "ImageViews.h"
+#include "ui/ImGuiLayer.h"
 
 #include "rhi/vk/gfx/Mesh.h"
 
@@ -18,6 +23,11 @@
 namespace Render
 {
     struct ViewUniforms;
+}
+
+namespace UI
+{
+    class ImGuiLayer;
 }
 
 namespace Vk
@@ -40,24 +50,37 @@ namespace Vk
 
     struct RendererContext
     {
+        VulkanInstance &instance;
+        VulkanPhysicalDevice &physDevice;
         VulkanLogicalDevice &device;
         SwapChain &swapChain;
         CommandBuffers &commandBuffers;
+        CommandPool &commandPool;
         SyncObjects &syncObjects;
         RenderPass &renderPass;
         GraphicsPipeline &graphicsPipeline;
+        ImageViews &imageViews;
+        DepthResources &depth;
+        UI::ImGuiLayer *imguiLayer;
 
         // Draw list is just borrowed pointers (no ownership)
-        std::vector<const Vk::Gfx::Mesh *> drawList;
+        std::vector<const Vk::Gfx::Mesh *>
+            drawList;
 
-        RendererContext(VulkanLogicalDevice &d,
+        RendererContext(VulkanInstance &i,
+                        VulkanPhysicalDevice &p,
+                        VulkanLogicalDevice &d,
                         SwapChain &s,
                         CommandBuffers &c,
+                        CommandPool &cp,
                         SyncObjects &so,
                         RenderPass &rp,
-                        GraphicsPipeline &gp) noexcept
-            : device(d), swapChain(s), commandBuffers(c),
-              syncObjects(so), renderPass(rp), graphicsPipeline(gp) {}
+                        GraphicsPipeline &gp,
+                        ImageViews &iv,
+                        DepthResources &dr,
+                        UI::ImGuiLayer *ul) noexcept
+            : instance(i), physDevice(p), device(d), swapChain(s), commandBuffers(c), commandPool(cp),
+              syncObjects(so), renderPass(rp), graphicsPipeline(gp), imageViews(iv), depth(dr), imguiLayer(ul) {}
 
         ~RendererContext() noexcept { destroyViewResources(); }
 

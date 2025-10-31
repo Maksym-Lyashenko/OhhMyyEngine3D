@@ -9,7 +9,6 @@ namespace Vk
 {
 
     class VulkanLogicalDevice;
-    class RenderPass;
 
     /**
      * @brief Basic graphics pipeline for the mesh pass (with textures).
@@ -21,15 +20,14 @@ namespace Vk
      * Push constants:
      *   - vertex stage: mat4 model (64 bytes)
      *
-     * NOTE (TEMPORARY):
-     *   Exposing descriptor set layouts here only to let RendererContext allocate sets.
-     *   We'll move this to a material/resource module later.
+     * NOTE: Uses dynamic rendering (Vulkan 1.3+)
      */
     class GraphicsPipeline
     {
     public:
         GraphicsPipeline(const VulkanLogicalDevice &device,
-                         const RenderPass &renderPass);
+                         VkFormat colorFormat,
+                         VkFormat depthFormat);
         ~GraphicsPipeline();
 
         GraphicsPipeline(const GraphicsPipeline &) = delete;

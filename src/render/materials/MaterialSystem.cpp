@@ -4,13 +4,13 @@
 namespace Render
 {
 
-    void MaterialSystem::init(VkPhysicalDevice phys, VkDevice dev,
+    void MaterialSystem::init(VmaAllocator allocator, VkDevice dev,
                               VkDescriptorSetLayout materialLayout,
                               uint32_t maxMaterials)
     {
         shutdown();
 
-        phys_ = phys;
+        allocator_ = allocator;
         device_ = dev;
         layout_ = materialLayout; // pipeline owns creation; we just store it
 
@@ -43,7 +43,7 @@ namespace Render
 
         layout_ = VK_NULL_HANDLE;
         device_ = VK_NULL_HANDLE;
-        phys_ = VK_NULL_HANDLE;
+        allocator_ = VK_NULL_HANDLE;
     }
 
     std::shared_ptr<Material> MaterialSystem::createMaterial(const MaterialDesc &desc)
@@ -54,7 +54,7 @@ namespace Render
         }
 
         auto mat = std::make_shared<Material>();
-        mat->create(phys_, device_,
+        mat->create(allocator_, device_,
                     /*descPool*/ pool_,
                     /*layout*/ layout_,
                     /*upload*/ uploadPool_,
@@ -88,9 +88,9 @@ namespace Render
         black_ = std::make_unique<Vk::Gfx::Texture2D>();
         flatNormal_ = std::make_unique<Vk::Gfx::Texture2D>();
 
-        white_->createFromRGBA8(phys_, device_, uploadPool_, uploadQueue_, whitePix, 1, 1, true, VK_FORMAT_R8G8B8A8_SRGB);
-        black_->createFromRGBA8(phys_, device_, uploadPool_, uploadQueue_, blackPix, 1, 1, true, VK_FORMAT_R8G8B8A8_UNORM);
-        flatNormal_->createFromRGBA8(phys_, device_, uploadPool_, uploadQueue_, flatNormalPix, 1, 1, true, VK_FORMAT_R8G8B8A8_UNORM);
+        white_->createFromRGBA8(allocator_, device_, uploadPool_, uploadQueue_, whitePix, 1, 1, true, VK_FORMAT_R8G8B8A8_SRGB);
+        black_->createFromRGBA8(allocator_, device_, uploadPool_, uploadQueue_, blackPix, 1, 1, true, VK_FORMAT_R8G8B8A8_UNORM);
+        flatNormal_->createFromRGBA8(allocator_, device_, uploadPool_, uploadQueue_, flatNormalPix, 1, 1, true, VK_FORMAT_R8G8B8A8_UNORM);
     }
 
     void MaterialSystem::destroyFallbacks()

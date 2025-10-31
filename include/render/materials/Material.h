@@ -1,9 +1,13 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+
 #include <memory>
 #include <string>
+
 #include "rhi/vk/gfx/Texture2D.h"
+
+#include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 
 namespace Render
@@ -48,7 +52,7 @@ namespace Render
         Material(const Material &) = delete;
         Material &operator=(const Material &) = delete;
 
-        void create(VkPhysicalDevice phys, VkDevice dev,
+        void create(VmaAllocator allocator, VkDevice dev,
                     VkDescriptorPool pool, VkDescriptorSetLayout layout,
                     VkCommandPool uploadPool,
                     VkQueue uploadQueue,
@@ -63,18 +67,16 @@ namespace Render
         VkDescriptorSet descriptorSet() const noexcept { return set_; }
 
     private:
-        void createUbo(VkPhysicalDevice phys);
+        void createUbo();
         void updateUbo(const MaterialParams &p);
 
-        static uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryPropertyFlags props);
-
     private:
-        VkPhysicalDevice phys_{VK_NULL_HANDLE};
+        VmaAllocator allocator_{VK_NULL_HANDLE};
         VkDevice device_{VK_NULL_HANDLE};
 
         // GPU
         VkBuffer ubo_{VK_NULL_HANDLE};
-        VkDeviceMemory uboMem_{VK_NULL_HANDLE};
+        VmaAllocation uboAlloc_{VK_NULL_HANDLE};
         VkDescriptorSet set_{VK_NULL_HANDLE};
 
         // Owned textures (may be nullptr if we used fallbacks)

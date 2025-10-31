@@ -1,7 +1,6 @@
 #include "rhi/vk/GraphicsPipeline.h"
 
 #include "rhi/vk/VulkanLogicalDevice.h"
-#include "rhi/vk/RenderPass.h"
 
 #include "core/Logger.h"
 #include "rhi/vk/Common.h"
@@ -17,7 +16,8 @@ namespace Vk
 {
 
     GraphicsPipeline::GraphicsPipeline(const VulkanLogicalDevice &device_,
-                                       const RenderPass &renderPass)
+                                       VkFormat colorFormat,
+                                       VkFormat depthFormat)
         : device(device_)
     {
         // --- 1) Load SPIR-V ---
@@ -157,8 +157,27 @@ namespace Vk
 
         VK_CHECK(vkCreatePipelineLayout(device.getDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout));
 
-        // --- 13) Graphics pipeline ---
+        // Debug: ensure depthFormat is valid
+        if (depthFormat == VK_FORMAT_UNDEFINED)
+        {
+            Core::Logger::log(Core::LogLevel::ERROR, "GraphicsPipeline: depthFormat is VK_FORMAT_UNDEFINED! Aborting pipeline creation.");
+            throw std::runtime_error("GraphicsPipeline: depthFormat is VK_FORMAT_UNDEFINED");
+        }
+        else
+        {
+            Core::Logger::log(Core::LogLevel::INFO, "GraphicsPipeline: creating with colorFormat=" + std::to_string(colorFormat) + " depthFormat=" + std::to_string(depthFormat));
+        }
+
+        // --- 13) DYNAMIC RENDERING ---
+        VkPipelineRenderingCreateInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachmentFormats = &colorFormat;
+        renderingInfo.depthAttachmentFormat = depthFormat;
+
+        // --- 14) Graphics pipeline with dynamic rendering ---
         VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.pNext = &renderingInfo; // Добавляем dynamic rendering info
         pipelineInfo.stageCount = 2;
         pipelineInfo.pStages = stages;
         pipelineInfo.pVertexInputState = &vertexInput;
@@ -170,16 +189,16 @@ namespace Vk
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.layout = pipelineLayout;
-        pipelineInfo.renderPass = renderPass.get();
+        pipelineInfo.renderPass = VK_NULL_HANDLE; // Обязательно VK_NULL_HANDLE для dynamic rendering!
         pipelineInfo.subpass = 0;
 
         VK_CHECK(vkCreateGraphicsPipelines(device.getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
 
-        // --- 14) Cleanup shader modules ---
+        // --- 15) Cleanup shader modules ---
         vkDestroyShaderModule(device.getDevice(), vertShaderModule, nullptr);
         vkDestroyShaderModule(device.getDevice(), fragShaderModule, nullptr);
 
-        Core::Logger::log(Core::LogLevel::INFO, "Graphics pipeline created successfully (UBO+Sampler+PC)");
+        Core::Logger::log(Core::LogLevel::INFO, "Graphics pipeline created successfully (Dynamic Rendering)");
     }
 
     GraphicsPipeline::~GraphicsPipeline()

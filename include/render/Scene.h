@@ -5,6 +5,8 @@
 #include <string>
 
 #include <glm/mat4x4.hpp>
+#include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/gfx/DrawItem.h"
@@ -15,7 +17,6 @@
 
 namespace Render
 {
-
     /**
      * @brief Scene is responsible for loading CPU-side assets (meshes/materials),
      *        uploading them to GPU (vertex/index buffers, descriptor sets),
@@ -37,37 +38,33 @@ namespace Render
          * @brief Load a glTF model from disk, optimize meshes, upload meshes to GPU,
          *        and create materials for them.
          *
-         * @param gltfPath path to .gltf or .glb
-         * @param physDevice VkPhysicalDevice for buffer allocations
-         * @param device     VkDevice for buffer allocations / descriptor creation
+         * @param gltfPath   Path to .gltf or .glb
+         * @param allocator  VMA allocator
+         * @param device     VkDevice for buffer creation / descriptor updates
+         * @param cmdPool    Command pool used for one-time staging copies
+         * @param queue      Queue used to submit staging copies
          * @param materialSystem MaterialSystem (already initialized)
          *
-         * This will fill internal gpuMeshes_, drawItems_, and worldAabb_.
+         * This fills internal gpuMeshes_, drawItems_, and worldAabb_.
          */
+        void loadModel(const std::string &gltfPath,
+                       VmaAllocator allocator,
+                       VkDevice device,
+                       VkCommandPool cmdPool,
+                       VkQueue queue,
+                       MaterialSystem &materialSystem);
 
-        void loadModel(
-            const std::string &gltfPath,
-            VkPhysicalDevice physDevice,
-            VkDevice device,
-            MaterialSystem &materialSystem);
-
-        /**
-         * @brief Get draw list for rendering.
-         * This is stable pointer refs to Mesh + Material pairs.
-         */
+        /// Draw list for rendering (stable non-owning pointers).
         const std::vector<Vk::Gfx::DrawItem> &drawItems() const noexcept { return drawItems_; }
 
-        /**
-         * @brief Returns world-space bounding box of all meshes in this scene.
-         * Used for camera framing.
-         */
+        /// World-space bounding box of all meshes (for camera framing).
         const Core::MathUtils::AABB &worldBounds() const noexcept { return worldAaBb_; }
 
     private:
         // All GPU meshes owned by the Scene
         std::vector<std::unique_ptr<Vk::Gfx::Mesh>> gpuMeshes_;
 
-        // Materials owned by the Scene (shared_ptr<IMaterial>)
+        // Materials owned by the Scene
         std::vector<std::shared_ptr<Render::Material>> materials_;
 
         // Final "what to draw" list (non-owning pointers into gpuMeshes_ and materials_)

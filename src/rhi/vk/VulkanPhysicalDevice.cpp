@@ -109,7 +109,7 @@ namespace Vk
                 indices.graphicsFamily = i;
 
             VkBool32 presentSupport = VK_FALSE;
-            // ⚠️ Surface API expects VkSurfaceKHR; your Surface exposes getSurface()
+            // Surface API expects VkSurfaceKHR; your Surface exposes getSurface()
             VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface.get(), &presentSupport));
             if (presentSupport)
                 indices.presentFamily = i;

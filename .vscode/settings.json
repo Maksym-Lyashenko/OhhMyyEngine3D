@@ -73,6 +73,11 @@
         "xutility": "cpp",
         "mutex": "cpp",
         "stop_token": "cpp",
-        "thread": "cpp"
+        "thread": "cpp",
+        "cinttypes": "cpp",
+        "condition_variable": "cpp",
+        "numeric": "cpp",
+        "shared_mutex": "cpp",
+        "unordered_set": "cpp"
     }
 }

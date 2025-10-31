@@ -27,10 +27,16 @@ namespace Vk
         VkQueue getGraphicsQueue() const noexcept { return graphicsQueue; }
         VkQueue getPresentQueue() const noexcept { return presentQueue; }
 
+        [[nodiscard]] uint32_t getGraphicsQueueFamilyIndex() const noexcept { return graphicsQueueFamilyIndex_; }
+        [[nodiscard]] uint32_t getPresentQueueFamilyIndex() const noexcept { return presentQueueFamilyIndex_; }
+
     private:
         VkDevice device{VK_NULL_HANDLE};
         VkQueue graphicsQueue{VK_NULL_HANDLE};
         VkQueue presentQueue{VK_NULL_HANDLE};
+
+        uint32_t graphicsQueueFamilyIndex_ = 0;
+        uint32_t presentQueueFamilyIndex_ = 0;
     };
 
 } // namespace Vk

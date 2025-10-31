@@ -19,6 +19,8 @@
 #include "rhi/vk/DepthResources.h"
 #include "rhi/vk/Common.h"
 
+#include "rhi/vk/memoryManager/VulkanAllocator.h"
+
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/gfx/Vertex.h"
 
@@ -31,6 +33,8 @@
 #include "render/materials/MaterialSystem.h"
 
 #include "input/InputSystem.h"
+
+#include "ui/ImGuiLayer.h"
 
 #include "asset/io/GltfLoader.h"
 #include "asset/processing/MeshOptimize.h"
@@ -72,6 +76,12 @@ namespace Vk
         physicalDevice = std::make_unique<VulkanPhysicalDevice>(instance->getInstance(), *surface);
         logicalDevice = std::make_unique<VulkanLogicalDevice>(*physicalDevice);
 
+        // --- Memory manager ------------------------------------------------------
+        allocator = std::make_unique<VulkanAllocator>();
+        allocator->init(instance->getInstance(),
+                        physicalDevice->getDevice(),
+                        logicalDevice->getDevice());
+
         // --- Swapchain & GPU-local targets ----------------------------------------
         swapChain = std::make_unique<SwapChain>(*physicalDevice, *logicalDevice, *surface, window);
         swapChain->create();
@@ -82,23 +92,14 @@ namespace Vk
 
         // Depth buffer (image + memory + view) + layout transition
         depth = std::make_unique<DepthResources>();
-        depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
+        depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(), allocator->get(),
                       swapChain->getExtent(), commandPool->get(), logicalDevice->getGraphicsQueue());
 
         // Render pass that matches color+depth attachments
         renderPass = std::make_unique<RenderPass>(*logicalDevice, *swapChain, depth->getFormat());
 
         // Graphics pipeline (no baked viewport/scissor — dynamic; layout has set=0 View UBO + PC for model)
-        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *renderPass);
-
-        // Materials
-        materials = std::make_unique<Render::MaterialSystem>();
-        // TEMP: Forwarding one-time commands for texture upload
-        materials->setUploadCmd(commandPool->get(), logicalDevice->getGraphicsQueue()); // TEMP
-        materials->init(physicalDevice->getDevice(),
-                        logicalDevice->getDevice(),
-                        graphicsPipeline->getMaterialSetLayout(),
-                        /*maxMaterials*/ 128);
+        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, swapChain->getImageFormat(), depth->getFormat());
 
         // Per-swapchain-image color views
         imageViews = std::make_unique<ImageViews>(logicalDevice->getDevice(),
@@ -122,7 +123,7 @@ namespace Vk
         materials = std::make_unique<Render::MaterialSystem>();
         materials->setUploadCmd(commandPool->get(), logicalDevice->getGraphicsQueue());
         materials->init(
-            physicalDevice->getDevice(),
+            allocator->get(),
             logicalDevice->getDevice(),
             graphicsPipeline->getMaterialSetLayout(),
             /*maxMaterials*/ 128);
@@ -132,8 +133,10 @@ namespace Vk
 
         scene->loadModel(
             "assets/makarov/scene.gltf",
-            physicalDevice->getDevice(),
-            logicalDevice->getDevice(),
+            allocator->get(),                  // VmaAllocator
+            logicalDevice->getDevice(),        // VkDevice
+            commandPool->get(),                // VkCommandPool (graphics family)
+            logicalDevice->getGraphicsQueue(), // VkQueue
             *materials);
 
         // scene now contains:
@@ -143,8 +146,8 @@ namespace Vk
         // - world bounds
 
         // --- Renderer context + per-image View UBO/sets ---------------------------
-        ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
-                                                *syncObjects, *renderPass, *graphicsPipeline);
+        ctx = std::make_unique<RendererContext>(*instance, *physicalDevice, *logicalDevice, *swapChain, *commandBuffers, *commandPool,
+                                                *syncObjects, *renderPass, *graphicsPipeline, *imageViews, *depth, nullptr);
         // The RendererContext only needs the list of meshes to draw (of DrawItems).
         // Currently RendererContext::drawList was std::vector<const Mesh*>.
         // We can still give it the meshes indirectly via scene->drawItems().
@@ -161,6 +164,11 @@ namespace Vk
 
         // Allocates UBO buffers and descriptor sets (set=0)
         ctx->createViewResources(physicalDevice->getDevice());
+
+        imguiLayer = std::make_unique<UI::ImGuiLayer>(*ctx, window);
+        imguiLayer->initialize();
+
+        ctx->imguiLayer = imguiLayer.get();
 
         // --- Camera setup using Scene bounds --------------------------------------------------------
         const Core::MathUtils::AABB &box = scene->worldBounds();
@@ -250,8 +258,8 @@ namespace Vk
             ctx->updateViewUbo(i, u);
 
             // Record for image i: pass descriptor set (set=0)
-            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, drawItemsRef, ctx->viewSet(i));
+            commandBuffers->record(i, *graphicsPipeline,
+                                   *swapChain, *imageViews, *depth, drawItemsRef, ctx->viewSet(i));
         }
 
         // --- Frame loop driver -----------------------------------------------------
@@ -280,7 +288,7 @@ namespace Vk
             fpsTimerAcc += dt;
             fpsFrameAcc += 1;
             // once in 0.25sec update smooth FPS
-            if (fpsFrameAcc >= 0.25)
+            if (fpsTimerAcc >= 0.25)
             {
                 smoothedFps = float(fpsFrameAcc / fpsTimerAcc);
                 fpsTimerAcc = 0.0;
@@ -311,28 +319,33 @@ namespace Vk
                 ctx->updateViewUbo(i, u);
             }
 
-            // --- DEBUG HEADER --- //
-            {
-                glm::vec3 p = camera->position();
-
-                char titleBuf[512];
-                std::snprintf(
-                    titleBuf,
-                    sizeof(titleBuf),
-                    "FPS %.1f | Cam (%.2f %.2f %.2f) yaw %.1f pitch %.1f | zN %.2f zF %.1f | %dx%d | %s",
-                    smoothedFps,
-                    p.x, p.y, p.z,
-                    camera->yawDeg(), camera->pitchDeg(),
-                    camera->zNear(), camera->zFar(),
-                    window.width(), window.height(),
-                    swapChain->presentModeName().c_str());
-
-                window.setTitle(titleBuf);
-            }
-
+            // Проверяем, нужно ли пересоздать swapchain ДО вызова ImGui
             maybeRecreateSwapchain();
             if (window.width() == 0 || window.height() == 0) // minimized
                 continue;
+
+            // --- DEBUG ImGui Window --- //
+            if (imguiLayer)
+            {
+                imguiLayer->beginFrame();
+
+                // build UI using ImGui API
+                ImGui::Begin("Stats");
+                ImGui::Text("FPS: %.1f", smoothedFps);
+                ImGui::Text("Cam pos: %.2f %.2f %.2f",
+                            camera->position().x,
+                            camera->position().y,
+                            camera->position().z);
+                ImGui::Text("Yaw: %.1f", camera->yawDeg());
+                ImGui::Text("Pitch: %.1f", camera->pitchDeg());
+                ImGui::Text("zN: %.2f", camera->zNear());
+                ImGui::Text("zF: %.1f", camera->zFar());
+                ImGui::Text("Window: %dx%d", window.width(), window.height());
+                ImGui::Text("Present Mode: %s", swapChain->presentModeName().c_str());
+
+                ImGui::End();
+            }
+
             frameRenderer->drawFrame();
         }
     }
@@ -351,6 +364,7 @@ namespace Vk
         // 3) Destroy scene and materials early - they own Mesh/Textures/VkBuffer/VkImage etc.
         // This ensures Mesh destructors free their Vulkan handles while device is valid.
         scene.reset();
+        materials->shutdown();
         materials.reset();
 
         // 4) Destroy context-held resources (per-image UBO's, descriptor pools/sets).
@@ -359,6 +373,12 @@ namespace Vk
             // owns per-image UBOs/descriptor sets
             ctx->destroyViewResources();
             ctx.reset();
+        }
+
+        if (imguiLayer)
+        {
+            imguiLayer->shutdown();
+            imguiLayer.reset();
         }
 
         // 5) Command buffers, frame buffers, image views, pipelines, renderpass, depth, sync
@@ -376,6 +396,12 @@ namespace Vk
         {
             swapChain->cleanup(); // explicity cleanup swapchain internals
             swapChain.reset();
+        }
+
+        if (allocator)
+        {
+            allocator->destroy();
+            allocator.reset();
         }
 
         // 7) Destroy logical device last (after all children freed)
@@ -421,7 +447,7 @@ namespace Vk
         camera->setAspect(swapChain->getExtent().width / float(swapChain->getExtent().height));
 
         depth = std::make_unique<DepthResources>();
-        depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(),
+        depth->create(physicalDevice->getDevice(), logicalDevice->getDevice(), allocator->get(),
                       swapChain->getExtent(), commandPool->get(), logicalDevice->getGraphicsQueue());
 
         const uint32_t newImageCount = static_cast<uint32_t>(swapChain->getImages().size());
@@ -433,7 +459,7 @@ namespace Vk
 
         // 4) Recreate dependent objects
         renderPass = std::make_unique<RenderPass>(*logicalDevice, *swapChain, depth->getFormat());
-        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, *renderPass);
+        graphicsPipeline = std::make_unique<GraphicsPipeline>(*logicalDevice, swapChain->getImageFormat(), depth->getFormat());
 
         imageViews = std::make_unique<ImageViews>(logicalDevice->getDevice(),
                                                   swapChain->getImages(), swapChain->getImageFormat());
@@ -447,19 +473,24 @@ namespace Vk
                                                           *commandPool, framebuffers->getFramebuffers().size());
 
         // 5) Recreate renderer context (pipeline/layout might have changed)
-        ctx = std::make_unique<RendererContext>(*logicalDevice, *swapChain, *commandBuffers,
-                                                *syncObjects, *renderPass, *graphicsPipeline);
+        ctx = std::make_unique<RendererContext>(*instance, *physicalDevice, *logicalDevice, *swapChain, *commandBuffers, *commandPool,
+                                                *syncObjects, *renderPass, *graphicsPipeline, *imageViews, *depth, nullptr);
         {
             ctx->drawList.clear();
             ctx->drawList.reserve(scene->drawItems().size());
             for (auto &di : scene->drawItems())
             {
-                ctx->drawList.push_back(di.mesh); // di.mesh is Mesh*
+                ctx->drawList.push_back(di.mesh);
             }
         }
         ctx->createViewResources(physicalDevice->getDevice());
 
-        // 6) Record new command buffers (and refresh UBOs)
+        // 6) Recreate ImGuiLayer ПОСЛЕ создания ctx
+        imguiLayer = std::make_unique<UI::ImGuiLayer>(*ctx, window);
+        imguiLayer->initialize();
+        ctx->imguiLayer = imguiLayer.get();
+
+        // 7) Record new command buffers (and refresh UBOs)
         const auto &drawItemsRef = scene->drawItems();
         for (uint32_t i = 0; i < swapChain->getImages().size(); ++i)
         {
@@ -471,11 +502,11 @@ namespace Vk
 
             ctx->updateViewUbo(i, u);
 
-            commandBuffers->record(i, *renderPass, *framebuffers, *graphicsPipeline,
-                                   *swapChain, drawItemsRef, ctx->viewSet(i));
+            commandBuffers->record(i, *graphicsPipeline,
+                                   *swapChain, *imageViews, *depth, drawItemsRef, ctx->viewSet(i));
         }
 
-        // 7) Recreate driver
+        // 8) Recreate driver
         frameRenderer = std::make_unique<FrameRenderer>(*ctx, *this);
 
         Logger::log(LogLevel::INFO, "SwapChain and dependent resources recreated");

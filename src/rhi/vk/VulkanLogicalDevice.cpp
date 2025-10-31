@@ -35,6 +35,8 @@ namespace Vk
     {
         // --- 1) Query queue families from the chosen physical device ---
         const auto indices = physicalDevice.getQueueFamilies();
+        graphicsQueueFamilyIndex_ = indices.graphicsFamily.value();
+        presentQueueFamilyIndex_ = indices.presentFamily.value();
         std::set<uint32_t> uniqueFamilies = {
             indices.graphicsFamily.value(),
             indices.presentFamily.value()};
@@ -82,6 +84,7 @@ namespace Vk
 
         VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         v13.synchronization2 = VK_TRUE;
+        v13.dynamicRendering = VK_TRUE;
 
         // If you’ll need 1.2/1.1 features in future, chain them here before v13.
 
