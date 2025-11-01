@@ -31,6 +31,7 @@
 #include "render/ViewUniforms.h"
 #include "render/materials/Material.h"
 #include "render/materials/MaterialSystem.h"
+#include "render/LightManager.h"
 
 #include "input/InputSystem.h"
 
@@ -127,6 +128,12 @@ namespace Vk
             logicalDevice->getDevice(),
             graphicsPipeline->getMaterialSetLayout(),
             /*maxMaterials*/ 128);
+
+        lightMgr = std::make_unique<Render::LightManager>();
+        lightMgr->init(
+            allocator->get(),
+            logicalDevice->getDevice(),
+            graphicsPipeline->getLightingSetLayout());
 
         // --- Create Scene and load content ------------------------------------
         scene = std::make_unique<Render::Scene>();
@@ -372,6 +379,12 @@ namespace Vk
         scene.reset();
         materials->shutdown();
         materials.reset();
+
+        if (lightMgr)
+        {
+            lightMgr->destroy();
+            lightMgr.reset();
+        }
 
         // 4) Destroy context-held resources (per-image UBO's, descriptor pools/sets).
         if (ctx)

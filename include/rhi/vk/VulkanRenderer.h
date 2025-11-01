@@ -14,6 +14,7 @@ namespace Render
     class CameraController;
     class Scene;
     class MaterialSystem;
+    class LightManager;
 }
 
 namespace Input
@@ -121,6 +122,7 @@ namespace Vk
         // ---- Content ----
         std::unique_ptr<Render::Scene> scene;
         std::unique_ptr<Render::MaterialSystem> materials;
+        std::unique_ptr<Render::LightManager> lightMgr;
 
         // ---- Camera ----
         std::unique_ptr<Render::OrbitCamera> orbitCamera; // Simple orbit camera for first view

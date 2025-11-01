@@ -141,6 +141,36 @@ namespace Vk
         matDslCi.pBindings = matBindings.data();
         VK_CHECK(vkCreateDescriptorSetLayout(device.getDevice(), &matDslCi, nullptr, &materialSetLayout));
 
+        // --- 10b) Descriptor set layout: set = 2 (Lighting) -----------------------
+        // Layout:
+        //   binding 0: UBO (std140)      -> per-frame/per-view lighting params
+        //   binding 1: SSBO (std430)     -> array of directional/point lights
+        //   binding 2: SSBO (std430)     -> visible light indices / clusters / tiles
+        //   binding 3: SSBO (std430)     -> any extra data (e.g., shadow infos)
+        //
+        // All are visible in fragment stage for forward lighting; add VERTEX if needed.
+        std::array<VkDescriptorSetLayoutBinding, 4> lightBindings{};
+
+        // UBO @ binding 0
+        lightBindings[0].binding = 0;
+        lightBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        lightBindings[0].descriptorCount = 1;
+        lightBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // SSBOs @ bindings 1..3
+        for (uint32_t b = 1; b <= 3; ++b)
+        {
+            lightBindings[b].binding = b;
+            lightBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lightBindings[b].descriptorCount = 1;
+            lightBindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+
+        VkDescriptorSetLayoutCreateInfo lightDslCi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        lightDslCi.bindingCount = static_cast<uint32_t>(lightBindings.size());
+        lightDslCi.pBindings = lightBindings.data();
+        VK_CHECK(vkCreateDescriptorSetLayout(device.getDevice(), &lightDslCi, nullptr, &lightingSetLayout));
+
         // --- 11) Push constants: mat4 model (VS) ---
         VkPushConstantRange pcRange{};
         pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -148,7 +178,7 @@ namespace Vk
         pcRange.size = static_cast<uint32_t>(sizeof(glm::mat4));
 
         // --- 12) Pipeline layout with two set layouts ---
-        const VkDescriptorSetLayout setLayouts[] = {viewSetLayout, materialSetLayout};
+        const VkDescriptorSetLayout setLayouts[] = {viewSetLayout, materialSetLayout, lightingSetLayout};
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(std::size(setLayouts));
         pipelineLayoutInfo.pSetLayouts = setLayouts;
@@ -219,6 +249,10 @@ namespace Vk
         if (materialSetLayout != VK_NULL_HANDLE)
         {
             vkDestroyDescriptorSetLayout(device.getDevice(), materialSetLayout, nullptr);
+        }
+        if (lightingSetLayout != VK_NULL_HANDLE)
+        {
+            vkDestroyDescriptorSetLayout(device.getDevice(), lightingSetLayout, nullptr);
         }
     }
 

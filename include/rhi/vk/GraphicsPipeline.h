@@ -39,6 +39,7 @@ namespace Vk
         // external access for context to allocate sets
         VkDescriptorSetLayout getViewSetLayout() const noexcept { return viewSetLayout; } // set=0
         VkDescriptorSetLayout getMaterialSetLayout() const { return materialSetLayout; }  // set=1
+        VkDescriptorSetLayout getLightingSetLayout() const { return lightingSetLayout; }  // set=2
 
     private:
         const VulkanLogicalDevice &device;
@@ -48,6 +49,7 @@ namespace Vk
         // set layouts
         VkDescriptorSetLayout viewSetLayout{VK_NULL_HANDLE};     // set=0 (VS UBO)
         VkDescriptorSetLayout materialSetLayout{VK_NULL_HANDLE}; // set=1 (FS albedo sampler)
+        VkDescriptorSetLayout lightingSetLayout{VK_NULL_HANDLE}; // set=2 (UBO + 3 SSBO)
 
         VkShaderModule createShaderModule(const std::vector<char> &code) const;
         std::vector<char> readFile(const std::string &filename) const;
