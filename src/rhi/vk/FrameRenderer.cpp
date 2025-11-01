@@ -116,6 +116,18 @@ namespace Vk
             VK_CHECK(presentRes);
         }
 
+        // vkQueueWaitIdle(device.getPresentQueue());
+
+        const bool mainWindowMinimized =
+            (ctx.swapChain.getExtent().width == 0 || ctx.swapChain.getExtent().height == 0);
+
+        if ((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) &&
+            !vulkanRenderer.isSwapchainDirty() && !mainWindowMinimized)
+        {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
+
         // 5) Advance frame index (ring-buffer over max frames in flight)
         currentFrame = (currentFrame + 1) % syncObjects.getMaxFramesInFlight();
     }

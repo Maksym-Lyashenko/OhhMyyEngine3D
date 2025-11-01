@@ -1,5 +1,6 @@
 #include "rhi/vk/gfx/Mesh.h"
 #include "rhi/vk/Common.h" // VK_CHECK (if you use it elsewhere)
+#include "core/StringUtils.h"
 
 #include <algorithm>
 #include <limits>
@@ -12,7 +13,8 @@ namespace Vk::Gfx
                       VkQueue queue,
                       const std::vector<Vertex> &vertices,
                       const std::vector<uint32_t> &indices,
-                      const glm::mat4 &local)
+                      const glm::mat4 &local,
+                      const std::string &meshPathOrName)
     {
         // Validate indices against vertex count
         const uint32_t vtxCount = static_cast<uint32_t>(vertices.size());
@@ -52,6 +54,10 @@ namespace Vk::Gfx
 
         indexCount_ = static_cast<uint32_t>(indices.size());
 
+        std::string meshName = Core::Str::assetNameFromPath(meshPathOrName);
+        if (meshName.empty())
+            meshName = "Mesh";
+
         // Create & upload VBO (DEVICE_LOCAL via transient staging)
         const VkDeviceSize vboBytes = static_cast<VkDeviceSize>(sizeof(Vertex) * vertices.size());
         if (vboBytes > 0)
@@ -59,14 +65,17 @@ namespace Vk::Gfx
             vbo_.createDeviceLocalWithData(
                 allocator, device, cmdPool, queue,
                 vertices.data(), vboBytes,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                (meshName + "_VB").c_str());
         }
         else
         {
             // Create an empty buffer so bind() is harmless (optional)
             vbo_.create(allocator, device, 0,
                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VMA_MEMORY_USAGE_GPU_ONLY);
+                        VMA_MEMORY_USAGE_GPU_ONLY,
+                        0,
+                        (meshName + "_VB").c_str());
         }
 
         // Create & upload IBO (DEVICE_LOCAL via transient staging)
@@ -76,13 +85,16 @@ namespace Vk::Gfx
             ibo_.createDeviceLocalWithData(
                 allocator, device, cmdPool, queue,
                 indices.data(), iboBytes,
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                (meshName + "_IB").c_str());
         }
         else
         {
             ibo_.create(allocator, device, 0,
                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VMA_MEMORY_USAGE_GPU_ONLY);
+                        VMA_MEMORY_USAGE_GPU_ONLY,
+                        0,
+                        (meshName + "_IB").c_str());
         }
     }
 

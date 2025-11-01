@@ -82,6 +82,8 @@ namespace Vk
         /// If swapchain is dirty and window is not minimized, recreate it now.
         void maybeRecreateSwapchain();
 
+        bool isSwapchainDirty() { return swapchainDirty; }
+
     private:
         // ---- Platform guards / window ----
         /// RAII guard for glfwInit()/glfwTerminate().

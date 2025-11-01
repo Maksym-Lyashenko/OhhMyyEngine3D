@@ -1,5 +1,7 @@
 #include "rhi/vk/gfx/Texture2D.h"
 #include "rhi/vk/Common.h"
+#include "core/StringUtils.h" // Core::Str::assetNameFromPath
+#include "rhi/vk/DebugUtils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -205,7 +207,8 @@ namespace Vk::Gfx
         uint32_t w,
         uint32_t h,
         bool generateMips,
-        VkFormat format)
+        VkFormat format,
+        const char *debugName)
     {
         destroy(); // ensure previous resources are freed
 
@@ -233,6 +236,11 @@ namespace Vk::Gfx
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
         VK_CHECK(vmaCreateImage(allocator_, &ii, &aci, &image_, &imageAlloc_, nullptr));
+        if (debugName && *debugName)
+        {
+            vmaSetAllocationName(allocator_, imageAlloc_, debugName);
+            nameImage(device_, image_, debugName);
+        }
 
         // 2) Create staging buffer (CPU → GPU)
         VkDeviceSize byteSize = VkDeviceSize(size_t(w) * h * 4);
@@ -248,6 +256,12 @@ namespace Vk::Gfx
         sbAci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
         VK_CHECK(vmaCreateBuffer(allocator_, &bi, &sbAci, &staging, &stagingAlloc, nullptr));
+        if (debugName && *debugName)
+        {
+            std::string stgName = std::string(debugName) + " Staging";
+            vmaSetAllocationName(allocator_, stagingAlloc, stgName.c_str());
+            nameBuffer(device_, staging, stgName.c_str());
+        }
 
         // Upload pixels
         void *mapped = nullptr;
@@ -282,7 +296,17 @@ namespace Vk::Gfx
 
         // 5) Create view and sampler
         createImageView();
+        if (debugName && *debugName)
+        {
+            std::string n = std::string(debugName) + " View";
+            nameImageView(device_, imageView_, n.c_str());
+        }
         createSampler();
+        if (debugName && *debugName)
+        {
+            std::string n = std::string(debugName) + " Sampler";
+            nameSampler(device_, sampler_, n.c_str());
+        }
     }
 
     void Texture2D::loadFromFile(
@@ -302,7 +326,9 @@ namespace Vk::Gfx
         if (!data)
             throw std::runtime_error("Failed to load image via stb: " + path);
 
-        createFromRGBA8(allocator, device, cmdPool, graphicsQueue, data, uint32_t(w), uint32_t(h), genMips, fmt);
+        const std::string debugName = Core::Str::assetNameFromPath(path);
+
+        createFromRGBA8(allocator, device, cmdPool, graphicsQueue, data, uint32_t(w), uint32_t(h), genMips, fmt, debugName.c_str());
         stbi_image_free(data);
 #endif
     }

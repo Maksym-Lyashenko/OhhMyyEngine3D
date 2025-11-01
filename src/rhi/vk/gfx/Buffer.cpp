@@ -1,6 +1,8 @@
 #include "rhi/vk/gfx/Buffer.h"
 #include "rhi/vk/Common.h" // VK_CHECK
-#include <cstring>         // std::memcpy>
+#include "rhi/vk/DebugUtils.h"
+
+#include <cstring> // std::memcpy>
 #include <algorithm>
 
 namespace Vk::Gfx
@@ -10,7 +12,8 @@ namespace Vk::Gfx
                         VkDeviceSize sz,
                         VkBufferUsageFlags usage,
                         VmaMemoryUsage memUsage,
-                        VmaAllocationCreateFlags allocFlags)
+                        VmaAllocationCreateFlags allocFlags,
+                        const char *debugName)
     {
         destroy();
 
@@ -32,6 +35,12 @@ namespace Vk::Gfx
 
         // If created with MAPPED flag, VMA returns persistent mapping in info.pMappedData
         mapped_ = info.pMappedData;
+
+        if (debugName && *debugName)
+        {
+            vmaSetAllocationName(allocator_, allocation_, debugName);
+            nameBuffer(device_, buffer_, debugName);
+        }
     }
 
     void Buffer::destroy() noexcept
@@ -129,19 +138,22 @@ namespace Vk::Gfx
                                            VkQueue queue,
                                            const void *data,
                                            VkDeviceSize bytes,
-                                           VkBufferUsageFlags usage)
+                                           VkBufferUsageFlags usage,
+                                           const char *debugName)
     {
         // 1) Create GPU-only destination
         create(allocator, device, bytes, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-               VMA_MEMORY_USAGE_GPU_ONLY);
+               VMA_MEMORY_USAGE_GPU_ONLY, 0, debugName);
 
         // 2) Create transient staging buffer (host visible + persistently mapped)
         Buffer staging;
+        std::string stagingName = (debugName && *debugName) ? (std::string(debugName) + " Staging") : std::string();
         staging.create(allocator, device, bytes,
                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                        VMA_MEMORY_USAGE_CPU_TO_GPU,
                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                           VMA_ALLOCATION_CREATE_MAPPED_BIT);
+                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                       stagingName.empty() ? nullptr : stagingName.c_str());
         staging.upload(data, static_cast<size_t>(bytes));
 
         // 3) Issue copy and drop staging

@@ -130,7 +130,8 @@ namespace Render
                 queue,
                 vertices,
                 md.indices,
-                md.localTransform);
+                md.localTransform,
+                gltfPath);
 
             gpuMeshes_.push_back(std::move(meshGpu));
         }

@@ -73,7 +73,8 @@ namespace Vk::Gfx
             uint32_t w,
             uint32_t h,
             bool generateMips,
-            VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+            VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+            const char *debugName = nullptr);
 
         /**
          * @brief Load texture from an image file using stb_image (requires OME3D_USE_STB).

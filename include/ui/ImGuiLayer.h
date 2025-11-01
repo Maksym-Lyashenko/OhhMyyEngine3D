@@ -6,6 +6,7 @@
 namespace Vk
 {
     struct RendererContext;
+    class VulkanAllocator;
 }
 
 namespace Platform
@@ -40,6 +41,8 @@ namespace UI
 
         // Ends the frame and records ImGui draw commands into a Vulkan command buffer.
         void render(VkCommandBuffer cmd);
+
+        void drawVmaPanel(Vk::VulkanAllocator &allocator);
 
         // Recreates ImGui Vulkan resources (e.g., on swapchain resize)
         void onSwapchainRecreate();

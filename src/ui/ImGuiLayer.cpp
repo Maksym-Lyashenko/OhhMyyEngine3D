@@ -20,11 +20,15 @@
 #include "platform/WindowManager.h"
 #include "rhi/vk/DepthResources.h"
 #include "rhi/vk/CommandPool.h"
+#include "rhi/vk/memoryManager/VulkanAllocator.h"
 #include "rhi/vk/Common.h" // VK_CHECK
 
 #include <vector>
 #include <stdexcept>
 #include <array>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace UI
 {
@@ -127,7 +131,7 @@ namespace UI
         io.Fonts->AddFontDefault();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
         // 2) Setup style
         ImGui::StyleColorsDark();
@@ -201,13 +205,88 @@ namespace UI
         ImGui::Render();
         ImDrawData *draw_data = ImGui::GetDrawData();
         ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);
+    }
 
-        // Обработка viewport windows - ВАЖНО: вызываем ДО завершения командного буфера
-        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    static const char *HeapFlagsToString(VkMemoryHeapFlags f)
+    {
+        // Для справки — сейчас нас больше интересует DEVICE_LOCAL, но оставим универсально.
+        return (f & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL" : "";
+    }
+
+    void ImGuiLayer::drawVmaPanel(Vk::VulkanAllocator &allocator)
+    {
+        if (!ImGui::Begin("Memory / VMA"))
         {
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
+            ImGui::End();
+            return;
         }
+
+        static bool detailedDump = true;
+
+        // Controls
+        ImGui::Checkbox("Detailed JSON map", &detailedDump);
+        ImGui::SameLine();
+        if (ImGui::Button("Dump VMA JSON"))
+        {
+            // timestamped filename
+            auto now = std::time(nullptr);
+            std::tm tm{};
+#ifdef _WIN32
+            localtime_s(&tm, &now);
+#else
+            localtime_r(&now, &tm);
+#endif
+            std::ostringstream oss;
+            oss << "vma_stats_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << (detailedDump ? "_detailed" : "") << ".json";
+            allocator.dumpStatsToFile(oss.str(), detailedDump);
+        }
+
+        ImGui::Separator();
+
+        // Budgets table
+        std::vector<VmaBudget> budgets;
+        VkPhysicalDeviceMemoryProperties memProps{};
+        allocator.getBudgets(budgets, memProps);
+
+        if (ImGui::BeginTable("VMAHeaps", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+        {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 28.f);
+            ImGui::TableSetupColumn("Flags");
+            ImGui::TableSetupColumn("Heap Size (MB)");
+            ImGui::TableSetupColumn("Budget (MB)");
+            ImGui::TableSetupColumn("Usage (MB)");
+            ImGui::TableSetupColumn("Usage %");
+            ImGui::TableHeadersRow();
+
+            for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i)
+            {
+                const auto &heap = memProps.memoryHeaps[i];
+                const auto &b = budgets[i];
+
+                const double heapMB = heap.size / (1024.0 * 1024.0);
+                const double budMB = b.budget / (1024.0 * 1024.0);
+                const double useMB = b.usage / (1024.0 * 1024.0);
+                const double percent = (budMB > 0.0) ? (100.0 * useMB / budMB) : 0.0;
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%u", i);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(HeapFlagsToString(heap.flags));
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.1f", heapMB);
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%.1f", budMB);
+                ImGui::TableSetColumnIndex(4);
+                ImGui::Text("%.1f", useMB);
+                ImGui::TableSetColumnIndex(5);
+                ImGui::Text("%.1f%%", percent);
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::End();
     }
 
     void ImGuiLayer::endFrame()

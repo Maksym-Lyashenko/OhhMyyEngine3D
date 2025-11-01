@@ -51,7 +51,8 @@ namespace Vk::Gfx
                     VkDeviceSize size,
                     VkBufferUsageFlags usage,
                     VmaMemoryUsage memUsage,
-                    VmaAllocationCreateFlags allocFlags = 0);
+                    VmaAllocationCreateFlags allocFlags = 0,
+                    const char *debugName = nullptr);
 
         /// Destroys the buffer + VMA allocation (safe to call multiple times).
         void destroy() noexcept;
@@ -108,7 +109,8 @@ namespace Vk::Gfx
                                        VkQueue queue,
                                        const void *data,
                                        VkDeviceSize bytes,
-                                       VkBufferUsageFlags usage);
+                                       VkBufferUsageFlags usage,
+                                       const char *debugName = nullptr);
 
     private:
         void moveFrom(Buffer &other) noexcept

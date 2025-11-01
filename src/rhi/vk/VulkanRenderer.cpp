@@ -139,6 +139,9 @@ namespace Vk
             logicalDevice->getGraphicsQueue(), // VkQueue
             *materials);
 
+        allocator->logBudgets();
+        allocator->dumpStatsToFile("vma_stats_after_loadModel.json", true);
+
         // scene now contains:
         // - gpu meshes
         // - materials
@@ -344,6 +347,9 @@ namespace Vk
                 ImGui::Text("Present Mode: %s", swapChain->presentModeName().c_str());
 
                 ImGui::End();
+
+                imguiLayer->drawVmaPanel(*allocator);
+                imguiLayer->endFrame();
             }
 
             frameRenderer->drawFrame();
