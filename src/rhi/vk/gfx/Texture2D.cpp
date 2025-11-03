@@ -136,8 +136,8 @@ namespace Vk::Gfx
         si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         si.mipLodBias = 0.0f;
-        si.anisotropyEnable = VK_FALSE; // enable if GPU supports anisotropy
-        si.maxAnisotropy = 1.0f;
+        si.anisotropyEnable = VK_TRUE; // enable if GPU supports anisotropy
+        si.maxAnisotropy = 8.0f;
         si.compareEnable = VK_FALSE;
         si.minLod = 0.0f;
         si.maxLod = float(mipLevels_);

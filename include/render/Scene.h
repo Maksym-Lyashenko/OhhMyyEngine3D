@@ -29,7 +29,7 @@ namespace Render
     {
     public:
         Scene() = default;
-        ~Scene() = default;
+        virtual ~Scene() = default;
 
         Scene(const Scene &) = delete;
         Scene &operator=(const Scene &) = delete;
@@ -60,7 +60,7 @@ namespace Render
         /// World-space bounding box of all meshes (for camera framing).
         const Core::MathUtils::AABB &worldBounds() const noexcept { return worldAaBb_; }
 
-    private:
+    protected:
         // All GPU meshes owned by the Scene
         std::vector<std::unique_ptr<Vk::Gfx::Mesh>> gpuMeshes_;
 

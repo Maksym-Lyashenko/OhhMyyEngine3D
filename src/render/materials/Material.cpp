@@ -1,8 +1,11 @@
 #include "render/materials/Material.h"
 #include "rhi/vk/Common.h" // VK_CHECK + logger
 
+#include <cstring>
+
 #ifdef OME3D_USE_STB
 // Texture2D::loadFromFile() already uses stb; we don't need to include here.
+#include "stb_image.h"
 #endif
 
 namespace Render
@@ -105,6 +108,7 @@ namespace Render
         }
 
         // MetallicRoughness (UNORM) — B=metallic, G=roughness
+        bool hasARM = false;
         if (!desc.mrPath.empty())
         {
             mr_ = std::make_unique<Vk::Gfx::Texture2D>();
@@ -114,9 +118,95 @@ namespace Render
             mrSampler_ = mr_->sampler();
             flags |= 4u;
         }
+        else if (!desc.metallicPath.empty() && !desc.roughnessPath.empty())
+        {
+#ifdef OME3D_USE_STB
+            int wM = 0, hM = 0, nM = 0;
+            int wR = 0, hR = 0, nR = 0;
+            int wA = 0, hA = 0, nA = 0;
+
+            unsigned char *mData = stbi_load(desc.metallicPath.c_str(), &wM, &hM, &nM, 1);
+            unsigned char *rData = stbi_load(desc.roughnessPath.c_str(), &wR, &hR, &nR, 1);
+            unsigned char *aData = nullptr;
+            if (!desc.occlusionPath.empty())
+                aData = stbi_load(desc.occlusionPath.c_str(), &wA, &hA, &nA, 1);
+
+            const bool mrSame = (mData && rData && wM == wR && hM == hR);
+            const bool aoSame = (aData && wA == wR && hA == hR);
+
+            if (mrSame && aoSame)
+            {
+                // === Пакуем ARM: R=AO, G=Roughness, B=Metallic ===
+                const int w = wR, h = hR;
+                std::vector<uint8_t> arm(size_t(w) * h * 4);
+                for (int i = 0; i < w * h; ++i)
+                {
+                    arm[4 * i + 0] = aData[i]; // AO
+                    arm[4 * i + 1] = rData[i]; // Rough
+                    arm[4 * i + 2] = mData[i]; // Metal
+                    arm[4 * i + 3] = 255;
+                }
+
+                mr_ = std::make_unique<Vk::Gfx::Texture2D>();
+                mr_->createFromRGBA8(allocator_, device_, uploadPool, uploadQueue,
+                                     arm.data(), w, h, /*genMips*/ true, VK_FORMAT_R8G8B8A8_UNORM);
+                mrView_ = mr_->view();
+                mrSampler_ = mr_->sampler();
+                flags |= 4u;  // has MR/ARM
+                flags |= 32u; // is ARM
+                hasARM = true;
+            }
+            else if (mrSame)
+            {
+                // === Собираем MR без AO (G=Roughness, B=Metallic). AO загрузим отдельно ===
+                const int w = wR, h = hR;
+                std::vector<uint8_t> mrg(size_t(w) * h * 4);
+                for (int i = 0; i < w * h; ++i)
+                {
+                    mrg[4 * i + 0] = 0;        // R (пусто)
+                    mrg[4 * i + 1] = rData[i]; // G = Rough
+                    mrg[4 * i + 2] = mData[i]; // B = Metal
+                    mrg[4 * i + 3] = 255;
+                }
+
+                mr_ = std::make_unique<Vk::Gfx::Texture2D>();
+                mr_->createFromRGBA8(allocator_, device_, uploadPool, uploadQueue,
+                                     mrg.data(), w, h, /*genMips*/ true, VK_FORMAT_R8G8B8A8_UNORM);
+                mrView_ = mr_->view();
+                mrSampler_ = mr_->sampler();
+                flags |= 4u; // has MR (НЕ ARM)
+                // flags |= 32u; // НЕ ставим isARM
+
+                // AO — отдельной текстурой, если есть путь
+                if (!desc.occlusionPath.empty())
+                {
+                    occlusion_ = std::make_unique<Vk::Gfx::Texture2D>();
+                    occlusion_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
+                                             desc.occlusionPath, true, VK_FORMAT_R8G8B8A8_UNORM);
+                    aoView_ = occlusion_->view();
+                    aoSampler_ = occlusion_->sampler();
+                    flags |= 8u; // has AO
+                }
+            }
+            else
+            {
+                // Размеры M/R не совпали — откажемся от композитинга.
+                // Просто загрузим MR из файла (если есть) ИЛИ оставим fallbacks.
+                // (Можно также логнуть предупреждение.)
+                // Здесь ничего не меняем: останутся дефолтные бинды.
+            }
+
+            if (mData)
+                stbi_image_free(mData);
+            if (rData)
+                stbi_image_free(rData);
+            if (aData)
+                stbi_image_free(aData);
+#endif
+        }
 
         // AO (UNORM)
-        if (!desc.occlusionPath.empty())
+        if (!desc.occlusionPath.empty() && !hasARM)
         {
             occlusion_ = std::make_unique<Vk::Gfx::Texture2D>();
             occlusion_->loadFromFile(allocator_, device_, uploadPool, uploadQueue,
@@ -140,6 +230,27 @@ namespace Render
         // UBO
         createUbo();
         MaterialParams params = desc.params;
+
+        // if user left fields zero-initialized, set sane defaults
+        if (params.baseColorFactor == glm::vec4(0.0f))
+            params.baseColorFactor = glm::vec4(1.0f); // белый, альфа = 1
+
+        // металл по умолчанию — диэлектрик
+        if (params.metallicFactor < 0.0f)
+            params.metallicFactor = 0.0f;
+
+        // не даём нулевую шероховатость (слишком «зеркально»)
+        if (params.roughnessFactor <= 0.0f)
+            params.roughnessFactor = 0.60f;
+
+        if (params.emissiveStrength < 0.0f)
+            params.emissiveStrength = 0.0f;
+
+        if (params.uvTiling == glm::vec2(0.0f))
+            params.uvTiling = glm::vec2(1.0f);
+        if (params.uvOffset == glm::vec2(0.0f))
+            params.uvOffset = glm::vec2(0.0f);
+
         params.flags = flags;
         updateUbo(params);
 

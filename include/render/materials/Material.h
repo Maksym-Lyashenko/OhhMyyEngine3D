@@ -14,25 +14,41 @@ namespace Render
 {
 
     // std140, 16-byte aligned
-    struct MaterialParams
+    struct alignas(16) MaterialParams
     {
-        glm::vec4 baseColorFactor{1, 1, 1, 1};
-        float metallicFactor{1.0f};
-        float roughnessFactor{1.0f};
-        float emissiveStrength{0.0f};
-        glm::vec2 uvTiling{1.0f, 1.0f};
-        glm::vec2 uvOffset{0.0f, 0.0f};
-        uint32_t flags{0}; // bitmask: 1=albedo, 2=normal, 4=mr, 8=ao, 16=emissive
-        uint32_t _pad[3]{};
+        glm::vec4 baseColorFactor; //  0..15
+
+        float metallicFactor;   // 16
+        float roughnessFactor;  // 20
+        float emissiveStrength; // 24
+        float _pad0;            // 28  <-- добивка до 32 (std140)
+
+        glm::vec2 uvTiling; // 32..39
+        glm::vec2 uvOffset; // 40..47
+
+        uint32_t flags;    // 48..51
+        uint32_t _pad1[3]; // 52..63  (итого 64 байта)
     };
+
+    static_assert(offsetof(Render::MaterialParams, baseColorFactor) == 0, "baseColorFactor");
+    static_assert(offsetof(Render::MaterialParams, metallicFactor) == 16, "metallicFactor");
+    static_assert(offsetof(Render::MaterialParams, roughnessFactor) == 20, "roughnessFactor");
+    static_assert(offsetof(Render::MaterialParams, emissiveStrength) == 24, "emissiveStrength");
+    static_assert(offsetof(Render::MaterialParams, uvTiling) == 32, "uvTiling");
+    static_assert(offsetof(Render::MaterialParams, uvOffset) == 40, "uvOffset");
+    static_assert(offsetof(Render::MaterialParams, flags) == 48, "flags");
+    static_assert(sizeof(Render::MaterialParams) == 64, "MaterialParams must be 64 bytes (std140)");
 
     struct MaterialDesc
     {
         // File paths (simple MVP; later we can accept prebuilt textures)
         std::string baseColorPath;
         std::string normalPath;
-        std::string mrPath; // metallic-roughness in BG channels
+        std::string mrPath;        // metallic-roughness (glTF-style: B=metallic, G=roughness)
+        std::string metallicPath;  // optional single-channel metallic
+        std::string roughnessPath; // optional single-channel roughness
         std::string occlusionPath;
+        std::string heightPath; // optional height (for POM/parallax) — пока просто храним
         std::string emissivePath;
         MaterialParams params{};
     };

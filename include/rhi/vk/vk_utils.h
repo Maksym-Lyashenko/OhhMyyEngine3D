@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <sstream>
+#include <glm/ext/matrix_float4x4.hpp>
 
 inline VkFormat FindSupportedDepthFormat(VkPhysicalDevice physicalDevice)
 {
@@ -20,3 +21,9 @@ inline VkFormat FindSupportedDepthFormat(VkPhysicalDevice physicalDevice)
     }
     throw std::runtime_error("No supported depth format");
 }
+
+struct PushPC
+{
+    glm::mat4 model;
+    glm::mat4 normalMatrix;
+};

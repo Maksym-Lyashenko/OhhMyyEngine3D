@@ -63,7 +63,8 @@ namespace Vk
                     const ImageViews &imageViews,
                     const DepthResources &depth,
                     const std::vector<Gfx::DrawItem> &items,
-                    VkDescriptorSet viewSet);
+                    VkDescriptorSet viewSet,
+                    VkDescriptorSet lightingSet);
 
         // record only ImGui draw commands for given image index (called each frame)
         void recordImGuiForImage(uint32_t imageIndex,

@@ -81,6 +81,7 @@ namespace Vk
 
         // --- 3) Features chain (Vulkan 1.3) ---
         VkPhysicalDeviceFeatures coreFeatures{}; // keep default-off core features
+        coreFeatures.samplerAnisotropy = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         v13.synchronization2 = VK_TRUE;

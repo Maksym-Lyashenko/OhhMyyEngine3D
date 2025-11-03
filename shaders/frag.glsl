@@ -1,153 +1,175 @@
 #version 450
 
-// --- поставь 1, если swapchain в sRGB (например VK_FORMAT_B8G8R8A8_SRGB)
-#define SWAPCHAIN_SRGB 1
+// — стабильные значения —
+const float NORMAL_MIP_BIAS = 1.25;   // было так, когда «дрожь» ушла
+const float NORMAL_SCALE    = 0.50;   // приглушаем нормаль
+const float ALBEDO_MIP_BIAS = 0.25;   // мягкая фильтрация альбедо
 
-// === varyings === (должны 1-в-1 совпадать с VS)
-layout(location = 0) in vec3 vT;
-layout(location = 1) in vec3 vB;
-layout(location = 2) in vec3 vN;
-layout(location = 3) in vec2 vUV;
-layout(location = 4) in vec3 vPosW;
+layout(location=0) in vec2  vUV;
+layout(location=1) in vec3  vPosWS;
+layout(location=2) in vec3  vNormalWS;
+layout(location=3) in vec3  vTangentWS;
+layout(location=4) in float vBtSign;
 
-// === выход ===
-layout(location = 0) out vec4 outColor;
+layout(location=0) out vec4 outColor;
 
-// === set = 0 : view UBO (VS+FS) ===
-layout(set = 0, binding = 0) uniform ViewUBO {
-    mat4 view;
-    mat4 proj;
-    mat4 viewProj;
-    vec4 cameraPos; // xyz
-} viewU;
+// set=0
+layout(std140, set=0, binding=0) uniform ViewUBO {
+    mat4 view; mat4 proj; mat4 viewProj; vec4 cameraPos;
+} uView;
 
-// === set = 1 : материалы ===
-layout(set = 1, binding = 0) uniform sampler2D uBaseColor;      // sRGB-текстура
-layout(set = 1, binding = 1) uniform sampler2D uNormalMap;       // UNORM
-layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughness; // UNORM (B=metallic, G=roughness)
+// set=1
+layout(set=1, binding=0) uniform sampler2D uBaseColor; // sRGB
+layout(set=1, binding=1) uniform sampler2D uNormal;    // UNORM
+layout(set=1, binding=2) uniform sampler2D uMR;        // UNORM (MR или ARM)
+layout(set=1, binding=3) uniform sampler2D uAO;        // UNORM (если не ARM)
+layout(set=1, binding=4) uniform sampler2D uEmissive;  // sRGB
+layout(std140, set=1, binding=5) uniform MaterialUBO {
+    vec4  baseColorFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    float emissiveStrength;
+    float _pad0;
+    vec2  uvTiling;
+    vec2  uvOffset;
+    uint  flags; // bit0=albedo, bit1=normal, bit2=hasMR, bit3=hasAO, bit4=hasEmissive, bit5=isARM
+    uint _p1; uint _p2; uint _p3;
+} uMat;
 
-// binding 3/4 (AO/Emissive) в лэйауте есть, но тут не используем — это ок.
+// set=2
+struct DirectionalLightGPU { vec4 direction_ws; vec4 radiance; };
+struct PointLightGPU       { vec4 position_ws;  vec4 color_range; }; // rgb + range
+layout(std140, set=2, binding=0) uniform LightingCountsUBO {
+    uvec4 counts_flags; // x=dir, y=point, z=spot, w=flags
+    vec4  ambientRGBA;  // rgb
+} uLight;
+layout(std430, set=2, binding=1) readonly buffer DirBuf   { DirectionalLightGPU dir[];   };
+layout(std430, set=2, binding=2) readonly buffer PointBuf { PointLightGPU       point[]; };
 
-// UBO материалов (binding = 5)
-layout(set = 1, binding = 5) uniform MaterialUBO {
-    vec4  baseColorFactor; // множитель к baseColor
-    float metalFactor;     // глобальный множитель к metallic (обычно 1.0)
-    float roughFactor;     // глобальный множитель к roughness (обычно 1.0)
-    float normalScale;     // 1.0 (можно отрицать для flip G)
-    float uExposure;       // 1.0 .. 1.4
-} matU;
+// ---------- helpers ----------
+vec3 normalFromMap(vec2 uv, vec3 Nws, vec3 Tws, float btSign){
+    vec3 N = normalize(Nws);
+    vec3 T = normalize(Tws);
+    vec3 B = normalize(btSign * cross(N, T));
 
-// === вспомогательные ===
-const float PI = 3.14159265359;
+    vec3 n = texture(uNormal, uv).xyz * 2.0 - 1.0;
+    n.xy *= NORMAL_SCALE;
+    n.z   = sqrt(max(0.0, 1.0 - dot(n.xy, n.xy)));
 
-// без лишних зависимостей
-vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
-
-// нормаль из нормал-карты в TBN
-vec3 normalFromMap(vec3 T, vec3 B, vec3 N, vec2 uv)
-{
-    vec3 tnorm = texture(uNormalMap, uv).xyz * 2.0 - 1.0;
-    // часто нужно флипнуть G. Используем знак normalScale.
-    tnorm.y *= sign(matU.normalScale == 0.0 ? 1.0 : matU.normalScale);
-
-    mat3 TBN = mat3(normalize(T), normalize(B), normalize(N));
-    return normalize(TBN * tnorm);
+    mat3 TBN = mat3(T, B, N);
+    return normalize(TBN * n);
 }
 
-// GGX
-float D_GGX(float NdotH, float a)
-{
+void sampleMR_AO(vec2 uv, out float metallic, out float roughness, out float ao){
+    metallic  = uMat.metallicFactor;
+    roughness = uMat.roughnessFactor;
+    ao        = 1.0;
+    bool hasMR = (uMat.flags & 4u) != 0u;
+    bool hasAO = (uMat.flags & 8u) != 0u;
+    bool isARM = (uMat.flags & 32u) != 0u;
+    if (hasMR){
+        vec3 mrg = texture(uMR, uv).rgb;
+        if (isARM){ ao = mrg.r; roughness = mrg.g; metallic = mrg.b; }
+        else { roughness = mrg.g; metallic = mrg.b; if (hasAO) ao = texture(uAO, uv).r; }
+    } else if (hasAO){
+        ao = texture(uAO, uv).r;
+    }
+}
+
+// GGX / Smith / Schlick
+float D_GGX(float NdotH, float a){
     float a2 = a*a;
-    float d = (NdotH*NdotH)*(a2-1.0)+1.0;
-    return a2 / (PI * d*d + 1e-7);
+    float d  = (NdotH*NdotH)*(a2-1.0)+1.0;
+    return a2 / max(3.14159265 * d * d, 1e-7);
 }
-float V_SmithGGXCorrelated(float NdotV, float NdotL, float a)
-{
-    float a2 = a*a;
-    float gv = NdotL * sqrt(max(0.0, (NdotV*(1.0-a2) + a2)));
-    float gl = NdotV * sqrt(max(0.0, (NdotL*(1.0-a2) + a2)));
-    return 0.5 / max(gv+gl, 1e-7);
+float G_Smith(float NdotV, float NdotL, float a){
+    float k = (a+1.0); k = (k*k) / 8.0;
+    float gv = NdotV / (NdotV*(1.0-k)+k);
+    float gl = NdotL / (NdotL*(1.0-k)+k);
+    return gv * gl;
 }
-vec3  F_Schlick(vec3 F0, float VdotH)
-{
-    float f = pow(1.0 - VdotH, 5.0);
-    return F0 + (1.0 - F0) * f;
+vec3  F_Schlick(float cosTheta, vec3 F0){
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// простая «полугемисфера» + слабый spec IBL
-vec3 hemiDiffuse(vec3 N, vec3 base)
-{
-    vec3 skyCol    = vec3(0.10, 0.11, 0.13);
-    vec3 groundCol = vec3(0.03, 0.028, 0.025);
-    float h = 0.5 * N.y + 0.5;
-    return mix(groundCol, skyCol, h) * base;
-}
+void main(){
+    vec2 uv = vUV * uMat.uvTiling + uMat.uvOffset;
 
-// ACES (Narkowicz)
-vec3 ACES(vec3 x)
-{
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
-}
+    // Альбедо — без адаптивных «наворотов»
+    vec3 albedo = texture(uBaseColor, uv).rgb * uMat.baseColorFactor.rgb;
 
-void main()
-{
-    // 1) сэмплы
-    // baseColor: текстура в SRGB-формате -> sampler вернет *линейный* цвет, так что без конверта.
-    vec4 baseTex = texture(uBaseColor, vUV);
-    vec3 base = baseTex.rgb * matU.baseColorFactor.rgb;
+    // MR/AO
+    float metallic, roughness, ao;
+    sampleMR_AO(uv, metallic, roughness, ao);
+    roughness = clamp(roughness, 0.04, 1.0);
+    float a = roughness * roughness;
 
-    vec3 mr  = texture(uMetallicRoughness, vUV).rgb;
-    float metallic  = clamp(mr.b * matU.metalFactor, 0.0, 1.0);
-    float roughness = clamp(mr.g * matU.roughFactor, 0.04, 1.0);
-
-    // 2) геометрия
-    vec3 N = normalFromMap(vT, vB, vN, vUV);
-    vec3 V = normalize(viewU.cameraPos.xyz - vPosW);
-    vec3 L = normalize(vec3(0.3, 0.8, 0.4)); // key light направление
-    vec3 H = normalize(L + V);
-
+    // Нормаль
+    vec3 N = ((uMat.flags & 2u) != 0u)
+           ? normalFromMap(uv, vNormalWS, vTangentWS, vBtSign)
+           : normalize(vNormalWS);
+    vec3 V = normalize(uView.cameraPos.xyz - vPosWS);
     float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float NdotH = max(dot(N, H), 0.0);
-    float VdotH = max(dot(V, H), 0.0);
 
-    // 3) PBR энергии
-    vec3  F0dielectric = vec3(0.04);
-    vec3  F0 = mix(F0dielectric, base, metallic);
-    float a  = roughness*roughness;
+    // Specular AA (только Toksvig по мипу нормали)
+    float lodN   = NORMAL_MIP_BIAS;
+    vec3  nAvg   = textureLod(uNormal, uv, lodN).xyz * 2.0 - 1.0;
+    float lenAvg = clamp(length(nAvg), 1e-3, 1.0);
+    float sigma2 = max((1.0 / lenAvg) - 1.0, 0.0);
+    a = sqrt(a*a + sigma2);
 
-    float  D = D_GGX(NdotH, a);
-    float  Vg = V_SmithGGXCorrelated(NdotV, NdotL, a);
-    vec3   F = F_Schlick(F0, VdotH);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 Lo = vec3(0.0);
 
-    vec3 specBRDF = (D * Vg) * F;      // * 1/PI уже «внутри» D/V аппроксимаций
-    vec3 kd = (1.0 - F) * (1.0 - metallic);
-    vec3 diffBRDF = kd * base / PI;
+    // Directional
+    uint nd = uLight.counts_flags.x;
+    for (uint i=0u; i<nd; ++i) {
+        vec3 L = normalize(-dir[i].direction_ws.xyz);
+        vec3 H = normalize(V + L);
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL > 0.0) {
+            float NdotH = max(dot(N, H), 0.0);
+            float VdotH = max(dot(V, H), 0.0);
+            float  D = D_GGX(NdotH, a);
+            float  G = G_Smith(NdotV, NdotL, a);
+            vec3   F = F_Schlick(VdotH, F0);
+            vec3  spec = (D * G) * F / max(4.0 * NdotV * NdotL, 1e-6);
+            vec3  kd   = (1.0 - F) * (1.0 - metallic);
+            vec3  diff = kd * albedo / 3.14159265;
+            Lo += (diff + spec) * dir[i].radiance.rgb * NdotL;
+        }
+    }
 
-    vec3 direct = (diffBRDF + specBRDF) * NdotL * vec3(3.0); // интенсивность лайтa
+    // Point
+    uint np = uLight.counts_flags.y;
+    for (uint i=0u; i<np; ++i) {
+        vec3 toL = point[i].position_ws.xyz - vPosWS;
+        float d  = length(toL);
+        vec3  L  = (d > 1e-5) ? toL / d : vec3(0,1,0);
+        float r  = max(point[i].color_range.a, 1e-3);
+        float att = 1.0 / (1.0 + (d*d)/(r*r));
 
-    // 4) простая IBL-заполнялка
-    vec3 diffIBL = hemiDiffuse(N, base) * kd * 0.6;
-    // чуть-чуть «холодного» отражения
-    vec3 F_ibl = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
-    vec3 specIBL = F_ibl * vec3(0.10, 0.11, 0.13) * (1.0 - roughness) * 0.7;
+        vec3 H = normalize(V + L);
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL > 0.0) {
+            float NdotH = max(dot(N, H), 0.0);
+            float VdotH = max(dot(V, H), 0.0);
+            float  D = D_GGX(NdotH, a);
+            float  G = G_Smith(NdotV, NdotL, a);
+            vec3   F = F_Schlick(VdotH, F0);
+            vec3  spec = (D * G) * F / max(4.0 * NdotV * NdotL, 1e-6);
+            vec3  kd   = (1.0 - F) * (1.0 - metallic);
+            vec3  diff = kd * albedo / 3.14159265;
+            Lo += (diff + spec) * point[i].color_range.rgb * NdotL * att;
+        }
+    }
 
-    vec3 colorLin = direct + diffIBL + specIBL;
+    vec3 ambient = uLight.ambientRGBA.rgb * albedo * (1.0 - metallic);
+    ambient *= 1.2; 
+    vec3 color = (ambient * ao) + Lo;
 
-    // 5) экспозиция + тонмап
-    float exposure = (matU.uExposure == 0.0 ? 1.1 : matU.uExposure);
-    colorLin = vec3(1.0) - exp(-colorLin * exposure);
-    vec3 mapped = ACES(colorLin);
+    if ((uMat.flags & 16u) != 0u)
+        color += texture(uEmissive, uv).rgb * uMat.emissiveStrength;
 
-#if SWAPCHAIN_SRGB
-    outColor = vec4(clamp(mapped, 0.0, 1.0), baseTex.a * matU.baseColorFactor.a);
-#else
-    outColor = vec4(linear_to_srgb(mapped), baseTex.a * matU.baseColorFactor.a);
-#endif
+    outColor = vec4(color, uMat.baseColorFactor.a);
 }

@@ -28,6 +28,7 @@
 #include "render/FreeCamera.h"
 #include "render/CameraController.h"
 #include "render/Scene.h"
+#include "render/WorkshopScene.h"
 #include "render/ViewUniforms.h"
 #include "render/materials/Material.h"
 #include "render/materials/MaterialSystem.h"
@@ -136,15 +137,52 @@ namespace Vk
             graphicsPipeline->getLightingSetLayout());
 
         // --- Create Scene and load content ------------------------------------
-        scene = std::make_unique<Render::Scene>();
+        scene = std::make_unique<Render::WorkshopScene>();
 
-        scene->loadModel(
-            "assets/makarov/scene.gltf",
-            allocator->get(),                  // VmaAllocator
-            logicalDevice->getDevice(),        // VkDevice
-            commandPool->get(),                // VkCommandPool (graphics family)
-            logicalDevice->getGraphicsQueue(), // VkQueue
-            *materials);
+        static_cast<Render::WorkshopScene *>(scene.get())->build(allocator->get(), logicalDevice->getDevice(), commandPool->get(), logicalDevice->getGraphicsQueue(), *materials);
+
+        {
+            using namespace Render;
+
+            // 1) Ambient term (soft baseline), flags=0 for now
+            const glm::vec3 ambientRGB(0.015f, 0.015f, 0.015f);
+            const uint32_t lightingFlags = 0u;
+
+            // 2) One directional ("sun") coming diagonally
+            {
+                DirectionalLightGPU d{};
+                // direction *toward* the surface (shader usually expects lightDir in world space)
+                d.direction_ws = glm::vec4(glm::normalize(glm::vec3(-0.4f, -1.0f, -0.35f)), 0.0f);
+                d.radiance = glm::vec4(1.0f, 0.98f, 0.92f, 1.0f); // warm & intense
+                lightMgr->dir.push_back(d);
+            }
+
+            // 3) Several point lights (ceiling bulbs)
+            for (int i = -1; i <= 1; ++i)
+            {
+                PointLightGPU p{};
+                p.position_ws = glm::vec4(i * 5.0f, 3.0f, 0.0f, 0.0f); // radius in .w
+                p.color_range = glm::vec4(1.0f, 0.95f, 0.9f, 5.0f);
+                // attenuation terms in .xyz if your struct uses them; else ignore.
+                // p.attenuation = glm::vec4(1.0f, 0.09f, 0.032f, 0.0f);
+                lightMgr->point.push_back(p);
+            }
+
+            // 4) One spot ("work lamp") near the right wall pointing to center
+            // {
+            //     SpotLightGPU s{};
+            //     s.position_range = glm::vec4(+8.0f, 1.2f, 0.0f, 10.0f);
+            //     s.direction_inner = glm::vec4(glm::normalize(glm::vec3(-1.0f, -0.2f, 0.0f)),
+            //                                   glm::radians(20.0f)); // inner/outer packing depends on your struct
+            //     s.color_outer = glm::vec4(1.0f, 0.95f, 0.85f, 10.0f);
+            //     // if you store cos(inner), cos(outer), pack them accordingly:
+            //     // s.angles = glm::vec4(cos(inner), cos(outer), 0, 0);
+            //     lightMgr->spot.push_back(s);
+            // }
+
+            // 5) Upload all lighting buffers (UBO + SSBOs). This will (re)grow SSBOs if needed.
+            lightMgr->upload(commandPool->get(), logicalDevice->getGraphicsQueue(), ambientRGB, lightingFlags);
+        }
 
         allocator->logBudgets();
         allocator->dumpStatsToFile("vma_stats_after_loadModel.json", true);
@@ -187,12 +225,17 @@ namespace Vk
         glm::vec3 center = 0.5f * (box.min + box.max);
         glm::vec3 extents = (box.max - box.min) * 0.5f;
         float radius = glm::length(extents);
+        if (radius < 0.001f || !std::isfinite(radius))
+            radius = 1.0f; // prevent zero radius
 
         // start distance for freeCamera
         float dist = radius * 2.0f;
 
         // put freeCamera a bit from top and under degree
         glm::vec3 eye = center + glm::vec3(dist * 0.5f, dist * 0.3f, dist * 1.0f);
+        // Prevent eye == center
+        if (glm::length(eye - center) < 1e-6f)
+            eye = center + glm::vec3(0.0f, radius, radius);
 
         // create freeCamera
         if (!freeCamera)
@@ -200,7 +243,7 @@ namespace Vk
             freeCamera = std::make_unique<Render::FreeCamera>(
                 eye,
                 /*yawDeg   */ 0.0f,
-                /*pitchDeg */ 0.0f,
+                /*pitchDeg */ -15.0f,
                 /*fovYDeg  */ 60.0f,
                 /*aspect   */ swapChain->getExtent().width /
                     float(swapChain->getExtent().height),
@@ -246,8 +289,8 @@ namespace Vk
         // optionally configure:
         inputSystem->setMouseSensitivity(0.12f);
         inputSystem->setInvertX(false);
-        inputSystem->setInvertY(false);         // you probably want Y inverted for natural mouse look
-        cameraController->setBaseSpeed(100.0f); // tune to taste
+        inputSystem->setInvertY(false);        // you probably want Y inverted for natural mouse look
+        cameraController->setBaseSpeed(10.0f); // tune to taste
         cameraController->setBoostMultiplier(4.0f);
         cameraController->setSlowMultiplier(0.2f);
         cameraController->setInvertForward(true);
@@ -269,7 +312,8 @@ namespace Vk
 
             // Record for image i: pass descriptor set (set=0)
             commandBuffers->record(i, *graphicsPipeline,
-                                   *swapChain, *imageViews, *depth, drawItemsRef, ctx->viewSet(i));
+                                   *swapChain, *imageViews, *depth,
+                                   drawItemsRef, ctx->viewSet(i), lightMgr->lightingSet());
         }
 
         // --- Frame loop driver -----------------------------------------------------
@@ -522,7 +566,8 @@ namespace Vk
             ctx->updateViewUbo(i, u);
 
             commandBuffers->record(i, *graphicsPipeline,
-                                   *swapChain, *imageViews, *depth, drawItemsRef, ctx->viewSet(i));
+                                   *swapChain, *imageViews, *depth,
+                                   drawItemsRef, ctx->viewSet(i), lightMgr->lightingSet());
         }
 
         // 8) Recreate driver

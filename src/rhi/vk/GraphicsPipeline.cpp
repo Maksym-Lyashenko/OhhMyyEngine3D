@@ -6,6 +6,7 @@
 #include "rhi/vk/Common.h"
 
 #include "rhi/vk/gfx/Vertex.h"
+#include <rhi/vk/vk_utils.h>
 
 #include <fstream>
 #include <stdexcept>
@@ -134,7 +135,7 @@ namespace Vk
         matBindings[5].binding = 5;
         matBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         matBindings[5].descriptorCount = 1;
-        matBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // параметры шейдера FS
+        matBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT; // параметры шейдера FS
 
         VkDescriptorSetLayoutCreateInfo matDslCi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         matDslCi.bindingCount = static_cast<uint32_t>(matBindings.size());
@@ -175,7 +176,7 @@ namespace Vk
         VkPushConstantRange pcRange{};
         pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         pcRange.offset = 0;
-        pcRange.size = static_cast<uint32_t>(sizeof(glm::mat4));
+        pcRange.size = static_cast<uint32_t>(sizeof(PushPC));
 
         // --- 12) Pipeline layout with two set layouts ---
         const VkDescriptorSetLayout setLayouts[] = {viewSetLayout, materialSetLayout, lightingSetLayout};

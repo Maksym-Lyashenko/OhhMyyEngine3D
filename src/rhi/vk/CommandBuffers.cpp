@@ -8,6 +8,7 @@
 
 #include "core/Logger.h"
 #include "rhi/vk/Common.h"
+#include <rhi/vk/vk_utils.h>
 
 #include "ui/ImGuiLayer.h"
 
@@ -56,7 +57,8 @@ namespace Vk
                                 const ImageViews &imageViews,
                                 const DepthResources &depth,
                                 const std::vector<Gfx::DrawItem> &items,
-                                VkDescriptorSet viewSet)
+                                VkDescriptorSet viewSet,
+                                VkDescriptorSet lightingSet)
     {
         if (imageIndex >= sceneBuffers_.size())
         {
@@ -100,7 +102,8 @@ namespace Vk
 
         // 3) Setup clear values
         VkClearValue clears[2]{};
-        clears[0].color = {{0.02f, 0.02f, 0.04f, 1.0f}};
+        // clears[0].color = {{0.02f, 0.02f, 0.04f, 1.0f}};
+        clears[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
         clears[1].depthStencil = {1.0f, 0};
 
         // 4) Begin dynamic rendering
@@ -159,22 +162,37 @@ namespace Vk
             if (!it.mesh || !it.material)
                 continue;
 
-            // Bind descriptor sets: [0] view UBO, [1] material
-            VkDescriptorSet sets[2] = {viewSet, it.material->descriptorSet()};
-            vkCmdBindDescriptorSets(cmd,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline.getPipelineLayout(),
-                                    /*firstSet*/ 0, /*setCount*/ 2, sets,
-                                    /*dynamicOffsetCount*/ 0, /*pDynamicOffsets*/ nullptr);
+            if (lightingSet != VK_NULL_HANDLE)
+            {
+                // Bind descriptor sets: [0] view UBO, [1] material, [2] lightning
+                VkDescriptorSet sets[3] = {viewSet, it.material->descriptorSet(), lightingSet};
+                vkCmdBindDescriptorSets(cmd,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipeline.getPipelineLayout(),
+                                        /*firstSet*/ 0, /*setCount*/ 3, sets,
+                                        /*dynamicOffsetCount*/ 0, /*pDynamicOffsets*/ nullptr);
+            }
+            else
+            {
+                VkDescriptorSet sets[2] = {viewSet, it.material->descriptorSet()};
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipeline.getPipelineLayout(),
+                                        /*firstSet=*/0, /*setCount=*/2, sets,
+                                        0, nullptr);
+            }
 
             // Bind geometry
             it.mesh->bind(cmd);
 
-            // Push constants: model matrix only (64 bytes)
-            glm::mat4 model = it.mesh->getLocalTransform();
+            // Push constants: model matrix only (128 bytes)
+            PushPC pc{};
+            pc.model = it.mesh->getLocalTransform();
+            glm::mat3 m3 = glm::mat3(pc.model);
+            pc.normalMatrix = glm::mat4(glm::transpose(glm::inverse(m3)));
+
             vkCmdPushConstants(cmd, pipeline.getPipelineLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               static_cast<uint32_t>(sizeof(glm::mat4)), &model);
+                               static_cast<uint32_t>(sizeof(PushPC)), &pc);
 
             it.mesh->draw(cmd);
         }
@@ -182,7 +200,7 @@ namespace Vk
         // 8) End dynamic rendering
         vkCmdEndRendering(cmd);
 
-        // 9) TRANSITION: COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR (для презентации)
+        // 9) TRANSITION: COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR (for pesentation)
         VkImageMemoryBarrier presentBarrier{};
         presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         presentBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
